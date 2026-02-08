@@ -51,4 +51,9 @@ assets/models/*.task
 torch_cache/
 
 # --- Logs ---
+logs/*
+!logs/.gitkeep
 *.log
+
+# --- Cookies ---
+assets/configs/youtube_cookies.txt
