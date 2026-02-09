@@ -7,6 +7,8 @@ from glob import glob
 from dotenv import load_dotenv
 from tqdm import tqdm
 import sys
+import string
+from collections import Counter
 
 # Import Utils (for logging)
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -50,6 +52,13 @@ def release_memory():
 
 def get_video_files():
     return sorted(glob(os.path.join(INPUT_DIR, "*.mp4")))
+
+def clean_text(text):
+    if not text: return ""
+    text = text.lower().strip()
+    # remove punctuation (!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~) from the ends
+    return text.strip(string.punctuation) 
+
 
 # ==========================================
 # Stage 1: Transcription
@@ -208,6 +217,101 @@ def stage_3_diarize(videos):
     release_memory()
     print("✅ Stage 3 Complete. Pipeline Finished.")
 
+# ==========================================
+# Stage 4: Normalize, Clean & Filter 
+# ==========================================
+def stage_4_processing(videos):
+    print(f"\nSTAGE 4: Normalizing, Cleaning & Filtering...")
+
+    for video_path in tqdm(videos, desc="Stage 4 - Processing"):
+        filename = os.path.basename(video_path)
+        file_id = os.path.splitext(filename)[0]
+        json_output_path = os.path.join(OUTPUT_DIR, f"{file_id}.json")
+
+        if not os.path.exists(json_output_path):
+            continue
+
+        try:
+            with open(json_output_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            # Check if the words are already processed
+            if "words" in data and isinstance(data["words"], list):
+                continue 
+
+            # Flattening Words
+            all_words = []
+            speaker_counter = Counter()
+
+            if "segments" in data:
+                for segment in data["segments"]:
+                    for word_obj in segment["words"]:
+                        # Clean the word
+                        raw_word = word_obj.get("word", "")
+                        cleaned_word = clean_text(raw_word)
+                
+                        if not cleaned_word:
+                            continue
+
+                        # Count the speaker
+                        speaker = word_obj.get("speaker")
+                        speaker_counter[speaker] += 1
+                            
+                        # Add the word if the start and end are not None
+                        if word_obj["start"] is not None and word_obj["end"] is not None:
+                            all_words.append(word_obj)
+                        else:
+                            logger.warning(f"Word '{cleaned_word}' has no start or end time in {filename}")
+
+            # Identify the main speaker
+            main_speaker = None
+            if speaker_counter:
+                main_speaker = speaker_counter.most_common(1)[0][0]
+            
+            # Filter and tag the words
+            count_kept_words = 0
+            for w in all_words:
+                # Keep the word if it is the main speaker
+                if main_speaker and w["speaker"] == main_speaker:
+                    w["keep"] = True
+                    count_kept_words += 1
+                else:
+                    w["keep"] = False
+
+            # Sort by start time
+            #all_words.sort(key=lambda x: x["start"])
+            
+            # Check for time anomalies
+            for i in range(1, len(all_words)):
+                if all_words[i]["start"] < all_words[i-1]["start"]:
+                    logger.warning(f"Time anomaly in {filename}: Word '{all_words[i]['word']}' starts before the previous word starts.")
+
+            # Delete the old words list if it exists
+            if "word_segments" in data:
+                del data["word_segments"]
+
+            # Delete the old segments list if it exists
+            if "segments" in data:
+                del data["segments"]
+            
+            # Save the new words list
+            data["words"] = all_words
+            data["main_speaker"] = main_speaker
+            data["stats"] = {
+                "total_words": len(all_words),
+                "kept_words": count_kept_words
+            }
+
+            # Save the final result
+            with open(json_output_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+
+        except Exception as e:
+            logger.error(f"Stage 4 Error on {filename}: {e}")
+            print(f"❌ Error processing {filename}: {e}")
+
+    print("✅ Stage 4 Complete. JSON files normalized and cleaned.")
+
 
 def main():
     if not HF_TOKEN:
@@ -228,7 +332,8 @@ def main():
     stage_1_transcribe(videos)
     stage_2_align(videos)
     stage_3_diarize(videos)
-    
+    stage_4_processing(videos)
+
     print(f"\nDone! All results saved to {OUTPUT_DIR}")
 
 if __name__ == "__main__":
