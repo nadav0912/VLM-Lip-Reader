@@ -1,0 +1,59 @@
+# --- Python & Environment ---
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+.venv/
+
+# --- IDE Settings (VS Code / PyCharm) ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS Generated Files ---
+.DS_Store
+Thumbs.db
+
+# --- Project Data (CRITICAL) ---
+data/01_raw_videos/*
+data/02_raw_transcripts/*
+data/03_logic/*
+data/04_dataset/*
+data/experiments/examples/*
+
+# Keep the folder structure, but ignore content
+!data/01_raw_videos/.gitkeep
+!data/02_raw_transcripts/.gitkeep
+!data/03_logic/.gitkeep
+!data/04_dataset/.gitkeep
+!assets/models/.gitkeep
+
+# --- Large Models (MediaPipe / PyTorch) ---
+*.task
+*.pt
+*.pth
+assets/models/*.task
+
+# --- Media Files (Safety Net) ---
+# רשת ביטחון למקרה ששמרת סרטון בתיקייה לא נכונה
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wav
+*.mp3
+
+# --- WhisperX / PyTorch Cache ---
+.cache/
+torch_cache/
+
+# --- Logs ---
+logs/*
+!logs/.gitkeep
+*.log
+
+# --- Cookies ---
+assets/configs/youtube_cookies.txt
