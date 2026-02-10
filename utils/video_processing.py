@@ -68,3 +68,21 @@ def calc_yaw_angle(landmarks):
     left_ear_x = landmarks[234].x
     right_ear_x = landmarks[454].x
     return (nose_x - left_ear_x) / (right_ear_x - nose_x) + 1e-6
+
+def calc_alignment_angle(landmarks):
+    """
+    Calculates the angle needed to rotate the face 
+    so the eyes are perfectly horizontal.
+    Uses indices 33 (left eye) and 263 (right eye).
+    """
+    # Get eye landmarks from config
+    eye_l = landmarks[FACE_ANCHORS["eye_l"]]
+    eye_r = landmarks[FACE_ANCHORS["eye_r"]]
+
+    # Calculate the difference in normalized coordinates
+    dy = eye_r.y - eye_l.y
+    dx = eye_r.x - eye_l.x
+
+    # Calculate angle in degrees
+    angle = math.degrees(math.atan2(dy, dx))
+    return angle
