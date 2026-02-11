@@ -20,16 +20,19 @@ Thumbs.db
 # --- Project Data (CRITICAL) ---
 data/01_raw_videos/*
 data/02_raw_transcripts/*
-data/03_logic/*
-data/04_dataset/*
-data/experiments/examples/*
+data/03_frame_analysis/*
+data/04_dataset/labels/*
+data/04_dataset/videos/*
+data/04_dataset/lips_videos/*
+
 
 # Keep the folder structure, but ignore content
 !data/01_raw_videos/.gitkeep
 !data/02_raw_transcripts/.gitkeep
-!data/03_logic/.gitkeep
-!data/04_dataset/.gitkeep
-!assets/models/.gitkeep
+!data/03_frame_analysis/.gitkeep
+!data/04_dataset/labels/.gitkeep
+!data/04_dataset/videos/.gitkeep
+!data/04_dataset/lips_videos/.gitkeep
 
 # --- Large Models (MediaPipe / PyTorch) ---
 *.task

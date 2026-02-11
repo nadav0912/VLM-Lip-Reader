@@ -18,5 +18,15 @@ LIPS_INDICES = [
 FRAME_STATUS = {
     2: "silence",
     1: "speaking",
-    0: "other speaker"
+    0: "other speaker",
+    -1: "movement" 
+}
+
+# Analysis video shortcuts meanings
+ANALYSIS_VIDEO_SHORTCUTS = {
+    'i': 'index',
+    't': 'time',
+    's': 'status',
+    'a': 'anchors',
+    'r': 'reject reason'
 }

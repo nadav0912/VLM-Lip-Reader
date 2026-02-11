@@ -18,9 +18,9 @@ from utils.mediapipe_handler import MediaPipeHandler
 
 from utils.video_processing import (
     extract_face_data, 
-    get_mouth_score, 
     calc_face_size_ratio, 
-    calc_yaw_angle
+    calc_yaw_angle,
+    calc_movement_metrics
 )
 
 # --- Configuration ---
@@ -34,9 +34,11 @@ LOG_DIR = os.getenv("LOGS_DIR", "logs")
 
 # Thresholds
 MIN_FACE_RATIO = float(os.getenv("MIN_FACE_RATIO", 0.10))
-MIN_MOUTH_SCORE = float(os.getenv("MIN_MOUTH_CONFIDENCE", 0.80))
 YAW_MIN = float(os.getenv("YAW_THRESHOLD_MIN", 0.25))
 YAW_MAX = float(os.getenv("YAW_THRESHOLD_MAX", 4.0))
+MOVEMENT_THRESHOLD = float(os.getenv("MOVEMENT_THRESHOLD"))
+YAW_THRESHOLD = float(os.getenv("YAW_THRESHOLD"))
+SIZE_THRESHOLD = float(os.getenv("SIZE_THRESHOLD"))
 
 os.makedirs(OUTPUT_ANALYSIS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -74,7 +76,6 @@ def precompute_audio_map(words, total_frames, fps):
             
     return audio_map
 
-
 def analyze_single_video(video_path, json_path):
     video_name = os.path.basename(video_path)
     file_id = os.path.splitext(video_name)[0]
@@ -111,6 +112,11 @@ def analyze_single_video(video_path, json_path):
     # Pre-compute the audio map
     frame_statuses = precompute_audio_map(words, total_frames, fps)
 
+    # Previous frame data
+    prev_landmarks = None
+    prev_yaw = 0.0
+    prev_ratio = 0.0
+
     print(f"Analyzing {video_name}...")
 
     # Optimization: Update TQDM every 10 frames to reduce IO overhead
@@ -134,35 +140,47 @@ def analyze_single_video(video_path, json_path):
             # --- Logic Flow ---
             if audio_status == 0:
                 reject_reason = "Other Speaker"
+                prev_landmarks = None
             else:
                 # Only run heavy MediaPipe if audio is potentially good
                 result = mp_handler.process(frame, timestamp_ms)
-                
+
                 if not result.face_landmarks:
                     reject_reason = "No Face"
+                    prev_landmarks = None
                 elif len(result.face_landmarks) > 1:
                     reject_reason = "Multiple Faces"
+                    prev_landmarks = None
                 else:
                     landmarks = result.face_landmarks[0]
-                    
-                    # Yaw Angle Check
+                    anchors = extract_face_data(landmarks, width, height)
+                    ratio = calc_face_size_ratio(landmarks)
                     yaw = calc_yaw_angle(landmarks)
+                    dist, yaw_diff, size_diff = calc_movement_metrics(landmarks, prev_landmarks, yaw, prev_yaw, ratio, prev_ratio)
+
+                    # Yaw Angle Check
                     if not (YAW_MIN <= yaw <= YAW_MAX):
+                        prev_landmarks = None
                         reject_reason = f"Bad Angle ({yaw:.2f})"
                     
                     # Face Size Check
-                    elif calc_face_size_ratio(landmarks) < MIN_FACE_RATIO:
-                        reject_reason = "Face Too Small"
+                    elif ratio < MIN_FACE_RATIO:
+                        prev_landmarks = None
+                        reject_reason = f"Face Too Small ({ratio:.2f})"
                     
-                    # Mouth Visibility Score
-                    elif get_mouth_score(landmarks) < MIN_MOUTH_SCORE:
-                        reject_reason = "Mouth Occluded/Low Confidence"
-                    
+                    # Movement Check
+                    elif dist > MOVEMENT_THRESHOLD or yaw_diff > YAW_THRESHOLD or size_diff > SIZE_THRESHOLD:
+                        prev_landmarks = None
+                        final_status = -1
+                        reject_reason = f"Movement ({dist:.2f}, {yaw_diff:.2f}, {size_diff:.2f})"
                     else:
                         # Success!
                         final_status = int(audio_status)
-                        anchors = extract_face_data(landmarks, width, height)
                         valid_frames_count += 1
+
+                        prev_landmarks = landmarks
+                        prev_yaw = yaw
+                        prev_ratio = ratio
 
             # --- Save Data ---
             frame_entry = {
@@ -170,9 +188,9 @@ def analyze_single_video(video_path, json_path):
                 "t": round(current_time_sec, 3),
                 "s": final_status
             }
-            if final_status != 0 and anchors:
+            if anchors:
                 frame_entry["a"] = anchors
-            else:
+            if reject_reason != "":
                 frame_entry["r"] = reject_reason
 
             analyzed_frames.append(frame_entry)
