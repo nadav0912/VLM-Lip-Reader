@@ -3,338 +3,216 @@ import gc
 import json
 import torch
 import whisperx
+import faster_whisper
 from glob import glob
 from dotenv import load_dotenv
 from tqdm import tqdm
 import sys
 import string
+import re
 from collections import Counter
 
-# Import Utils (for logging)
+# ========================================================
+# --- תיקון DLL וסביבת עבודה לכרטיסי אינטל / CPU ---
+# ========================================================
+# הוספת נתיבי הספריות שהורדו כדי למנוע שגיאות DLL חסרים
+os.environ["PATH"] += os.pathsep + r'C:\Users\liory\AppData\Local\Programs\Python\Python311\Lib\site-packages\nvidia\cudnn\bin'
+os.environ["PATH"] += os.pathsep + r'C:\Users\liory\AppData\Local\Programs\Python\Python311\Lib\site-packages\nvidia\cublas\bin'
+
+# תיקון נתיבים לייבוא תיקיית utils מתיקיית השורש
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
+
 from utils.common import setup_logger
 
-# Fix for loading models in newer versions of PyTorch
+# ========================================================
+# --- Monkey Patch לתיקון שגיאת multilingual ב-faster_whisper ---
+# ========================================================
+def apply_faster_whisper_patch():
+    try:
+        target = None
+        if hasattr(faster_whisper, "transcription") and hasattr(faster_whisper.transcription, "TranscriptionOptions"):
+            target = faster_whisper.transcription.TranscriptionOptions
+        elif hasattr(faster_whisper, "TranscriptionOptions"):
+            target = faster_whisper.TranscriptionOptions
+        
+        if target:
+            original_init = target.__init__
+            def patched_init(self, *args, **kwargs):
+                kwargs.pop("multilingual", None)
+                return original_init(self, *args, **kwargs)
+            target.__init__ = patched_init
+    except Exception:
+        pass
+
+apply_faster_whisper_patch()
+
+# תיקון טעינת מודלים ב-PyTorch 2.4+
 original_load = torch.load
 def patched_load(*args, **kwargs):
     kwargs['weights_only'] = False
     return original_load(*args, **kwargs)
 torch.load = patched_load
 
-# Optimization for CUDA
-torch.backends.cuda.matmul.allow_tf32 = True
-
-# Settings
+# ========================================================
+# --- הגדרות נתיבים ומודל ---
+# ========================================================
 load_dotenv()
 
-INPUT_DIR = os.getenv("RAW_VIDEOS_DIR", "data/01_raw_videos")
-OUTPUT_DIR = os.getenv("ROW_TRANSCRIPTS_DIR", "data/02_transcribed")
-LOG_DIR = os.getenv("LOGS_DIR", "logs")
-HF_TOKEN = "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"
+INPUT_DIR = r"C:\VLM-Lip-Reader\data\01_raw_videos"
+OUTPUT_DIR = r"C:\VLM-Lip-Reader\data\02_transcribed"
+LOG_DIR = r"C:\VLM-Lip-Reader\logs"
+HF_TOKEN = "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"
 
-# Model settings
-MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "large-v3")
-BATCH_SIZE = int(os.getenv("WHISPER_BATCH_SIZE", 8)) 
-COMPUTE_TYPE = os.getenv("WHISPER_COMPUTE_TYPE", "int8") 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+# הגדרות הרצה (מכיוון שאין NVIDIA GPU, נשתמש ב-CPU)
+MODEL_SIZE = "base"  # שיניתי ל-base כדי שזה ירוץ מהר על המעבד שלך
+DEVICE = "cpu"       
+COMPUTE_TYPE = "int8"
+BATCH_SIZE = 1       # על CPU עדיף batch קטן כדי לא לחנוק את ה-RAM
 
-# Create logger
 os.makedirs(LOG_DIR, exist_ok=True)
-logger = setup_logger('transcriber', os.path.join(LOG_DIR, 'transcribe_pipeline.log'))
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+logger = setup_logger("transcriber", os.path.join(LOG_DIR, "transcribe_pipeline.log"))
 
-def release_memory():
-    # Clean up the GPU memory
+def release_memory(*args):
+    for obj in args:
+        del obj
     gc.collect()
-    torch.cuda.empty_cache()
-
-def get_video_files():
-    return sorted(glob(os.path.join(INPUT_DIR, "*.mp4")))
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 def clean_text(text):
     if not text: return ""
-    text = text.lower().strip()
-    # remove punctuation (!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~) from the ends
-    return text.strip(string.punctuation) 
-
+    return re.sub(r"[^\w\s]", "", text.lower().strip())
 
 # ==========================================
-# Stage 1: Transcription
+# STAGE 1: Transcription
 # ==========================================
 def stage_1_transcribe(videos):
-    print(f"\nSTAGE 1: Transcribing {len(videos)} videos...")
-    
-    # Load the model once
-    print(f"Loading Whisper Model ({MODEL_SIZE})...")
+    print(f"\nSTAGE 1: Transcribing {len(videos)} videos on {DEVICE}...")
     try:
-        model = whisperx.load_model(MODEL_SIZE, DEVICE, compute_type=COMPUTE_TYPE)
+            # גרסה פשוטה יותר של טעינה שעובדת על כל גרסאות WhisperX
+            model = whisperx.load_model(
+                MODEL_SIZE, 
+                DEVICE, 
+                compute_type=COMPUTE_TYPE, 
+                language="en"
+            )
     except Exception as e:
-        print(f"❌ Failed to load model: {e}")
+        print(f"Failed to load model: {e}")
         return
 
-    for video_path in tqdm(videos, desc="Stage 1 - Transcribing"):
-        filename = os.path.basename(video_path)
-        file_id = os.path.splitext(filename)[0]
-        json_output_path = os.path.join(OUTPUT_DIR, f"{file_id}.json")
-
-        # Skip if already exists
-        if os.path.exists(json_output_path):
+    for video_path in tqdm(videos, desc="Transcribing"):
+        file_id = os.path.splitext(os.path.basename(video_path))[0]
+        output_path = os.path.join(OUTPUT_DIR, f"{file_id}.json")
+        
+        if os.path.exists(output_path):
             continue
 
         try:
             audio = whisperx.load_audio(video_path)
             result = model.transcribe(audio, batch_size=BATCH_SIZE)
             
-            # Save intermediate result
-            with open(json_output_path, "w", encoding="utf-8") as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(result, f, indent=4, ensure_ascii=False)
             
-            # Release local memory
-            del audio
-            del result
-            
+            release_memory(audio, result)
         except Exception as e:
-            logger.error(f"Stage 1 Error on {filename}: {e}")
-            print(f"❌ Error: {e}")
+            logger.error(f"Stage 1 Error on {file_id}: {e}")
 
-    # Delete the model from memory at the end of the stage
-    del model
-    release_memory()
-    print("✅ Stage 1 Complete. Model unloaded.")
-
+    release_memory(model)
 
 # ==========================================
-# Stage 2: Alignment
+# STAGE 2: Alignment
 # ==========================================
 def stage_2_align(videos):
-    print(f"\nSTAGE 2: Aligning text...")
-
-    # Load the Align model (assuming English by default for execution)
-    print("Loading Align Model...")
+    print(f"\nSTAGE 2: Aligning words to timestamps...")
     try:
-        # Here we use en, if you have other languages you need to load dynamically
         align_model, align_metadata = whisperx.load_align_model(language_code="en", device=DEVICE)
     except Exception as e:
         print(f"❌ Failed to load align model: {e}")
         return
 
-    for video_path in tqdm(videos, desc="Stage 2 - Aligning"):
-        filename = os.path.basename(video_path)
-        file_id = os.path.splitext(filename)[0]
-        json_output_path = os.path.join(OUTPUT_DIR, f"{file_id}.json")
-
-        if not os.path.exists(json_output_path):
-            continue
+    for video_path in tqdm(videos, desc="Aligning"):
+        file_id = os.path.splitext(os.path.basename(video_path))[0]
+        output_path = os.path.join(OUTPUT_DIR, f"{file_id}.json")
+        
+        if not os.path.exists(output_path): continue
 
         try:
-            # Load the JSON from stage 1
-            with open(json_output_path, "r", encoding="utf-8") as f:
+            with open(output_path, "r", encoding="utf-8") as f:
                 result = json.load(f)
-
-            # Check if Align was already performed (if there are words?)
-            if "segments" in result and len(result["segments"]) > 0 and "words" in result["segments"][0]:
-                continue 
-
-            audio = whisperx.load_audio(video_path)
             
-            # Perform the alignment
-            result = whisperx.align(
-                result["segments"], align_model, align_metadata, audio, DEVICE, return_char_alignments=False
-            )
-
-            # Save the updated result
-            with open(json_output_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, indent=4, ensure_ascii=False)
-
-            del audio
-            del result
-
-        except Exception as e:
-            logger.error(f"Stage 2 Error on {filename}: {e}")
-
-    # Delete the models from memory
-    del align_model
-    del align_metadata
-    release_memory()
-    print("✅ Stage 2 Complete. Model unloaded.")
-
-
-# ==========================================
-# Stage 3: Diarization
-# ==========================================
-def stage_3_diarize(videos):
-    print(f"\nSTAGE 3: Identifying Speakers...")
-    
-    # Import here to avoid dependency issues
-    from whisperx.diarize import DiarizationPipeline
-
-    print("Loading Diarization Pipeline...")
-    try:
-        diarize_model = DiarizationPipeline(use_auth_token=HF_TOKEN, device=DEVICE)
-    except Exception as e:
-        print(f"❌ Failed to load Diarization model: {e}")
-        return
-
-    for video_path in tqdm(videos, desc="Stage 3 - Diarizing"):
-        filename = os.path.basename(video_path)
-        file_id = os.path.splitext(filename)[0]
-        json_output_path = os.path.join(OUTPUT_DIR, f"{file_id}.json")
-
-        if not os.path.exists(json_output_path):
-            continue
-
-        try:
-            with open(json_output_path, "r", encoding="utf-8") as f:
-                result = json.load(f)
-
-            # Check if speakers were already identified
-            if "segments" in result and len(result["segments"]) > 0 and "speaker" in result["segments"][0]:
+            if "segments" in result and len(result["segments"]) > 0 and "words" in result["segments"][0]:
                 continue
 
             audio = whisperx.load_audio(video_path)
+            result = whisperx.align(result.get("segments", []), align_model, align_metadata, audio, DEVICE)
             
-            # Perform the diarization
-            diarize_segments = diarize_model(audio, min_speakers=1, max_speakers=2)
-            
-            # Assign the speakers to the words
-            result = whisperx.assign_word_speakers(diarize_segments, result)
-
-            # Save the final result
-            with open(json_output_path, "w", encoding="utf-8") as f:
+            with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(result, f, indent=4, ensure_ascii=False)
-
-            del audio
-            del result
-            del diarize_segments
-
+            release_memory(audio)
         except Exception as e:
-            logger.error(f"Stage 3 Error on {filename}: {e}")
+            logger.error(f"Stage 2 Error on {file_id}: {e}")
 
-    # Delete the model from memory
-    del diarize_model
-    release_memory()
-    print("✅ Stage 3 Complete. Pipeline Finished.")
+    release_memory(align_model)
 
 # ==========================================
-# Stage 4: Normalize, Clean & Filter 
+# STAGE 4: Cleaning & Normalization
 # ==========================================
 def stage_4_processing(videos):
-    print(f"\nSTAGE 4: Normalizing, Cleaning & Filtering...")
-
-    for video_path in tqdm(videos, desc="Stage 4 - Processing"):
-        filename = os.path.basename(video_path)
-        file_id = os.path.splitext(filename)[0]
-        json_output_path = os.path.join(OUTPUT_DIR, f"{file_id}.json")
-
-        if not os.path.exists(json_output_path):
-            continue
+    print(f"\nSTAGE 4: Normalizing JSON files...")
+    for video_path in tqdm(videos, desc="Processing"):
+        file_id = os.path.splitext(os.path.basename(video_path))[0]
+        output_path = os.path.join(OUTPUT_DIR, f"{file_id}.json")
+        
+        if not os.path.exists(output_path): continue
 
         try:
-            with open(json_output_path, "r", encoding="utf-8") as f:
+            with open(output_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            # Check if the words are already processed
-            if "words" in data and isinstance(data["words"], list):
-                continue 
-
-            # Flattening Words
             all_words = []
             speaker_counter = Counter()
 
-            if "segments" in data:
-                for segment in data["segments"]:
-                    for word_obj in segment["words"]:
-                        # Clean the word
-                        raw_word = word_obj.get("word", "")
-                        cleaned_word = clean_text(raw_word)
-                
-                        if not cleaned_word:
-                            continue
+            for segment in data.get("segments", []):
+                for word_obj in segment.get("words", []):
+                    cleaned = clean_text(word_obj.get("word", ""))
+                    if not cleaned: continue
+                    
+                    speaker = word_obj.get("speaker", "SPEAKER_00")
+                    speaker_counter[speaker] += 1
+                    
+                    if word_obj.get("start") is not None:
+                        all_words.append(word_obj)
 
-                        # Count the speaker
-                        speaker = word_obj.get("speaker")
-                        speaker_counter[speaker] += 1
-                            
-                        # Add the word if the start and end are not None
-                        if word_obj["start"] is not None and word_obj["end"] is not None:
-                            all_words.append(word_obj)
-                        else:
-                            logger.warning(f"Word '{cleaned_word}' has no start or end time in {filename}")
-
-            # Identify the main speaker
-            main_speaker = None
-            if speaker_counter:
-                main_speaker = speaker_counter.most_common(1)[0][0]
+            main_speaker = speaker_counter.most_common(1)[0][0] if speaker_counter else None
             
-            # Filter and tag the words
-            count_kept_words = 0
-            for w in all_words:
-                # Keep the word if it is the main speaker
-                if main_speaker and w["speaker"] == main_speaker:
-                    w["keep"] = True
-                    count_kept_words += 1
-                else:
-                    w["keep"] = False
-
-            # Sort by start time
-            #all_words.sort(key=lambda x: x["start"])
-            
-            # Check for time anomalies
-            for i in range(1, len(all_words)):
-                if all_words[i]["start"] < all_words[i-1]["start"]:
-                    logger.warning(f"Time anomaly in {filename}: Word '{all_words[i]['word']}' starts before the previous word starts.")
-
-            # Delete the old words list if it exists
-            if "word_segments" in data:
-                del data["word_segments"]
-
-            # Delete the old segments list if it exists
-            if "segments" in data:
-                del data["segments"]
-            
-            # Save the new words list
+            # שמירת המילים בפורמט שטוח לאימון קל יותר
             data["words"] = all_words
             data["main_speaker"] = main_speaker
-            data["stats"] = {
-                "total_words": len(all_words),
-                "kept_words": count_kept_words
-            }
-
-            # Save the final result
-            with open(json_output_path, "w", encoding="utf-8") as f:
+            
+            with open(output_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=4, ensure_ascii=False)
-
         except Exception as e:
-            logger.error(f"Stage 4 Error on {filename}: {e}")
-            print(f"❌ Error processing {filename}: {e}")
-
-    print("✅ Stage 4 Complete. JSON files normalized and cleaned.")
-
+            logger.error(f"Stage 4 Error on {file_id}: {e}")
 
 def main():
-    if not HF_TOKEN:
-        print("❌ Error: HUGGINGFACE_TOKEN missing in .env")
-        return
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    videos = get_video_files()
-    
+    videos = sorted(glob(os.path.join(INPUT_DIR, "*.mp4")))
     if not videos:
-        print("⚠️ No videos found.")
+        print("⚠️ No videos found in 01_raw_videos")
         return
 
-    print(f"🚀 Starting Pipeline on {len(videos)} videos")
-    print(f"Status: CUDA Available? {torch.cuda.is_available()}")
-
-    # Run the stages one after the other to avoid OOM
+    print(f"🚀 Starting Pipeline on {len(videos)} videos (CPU Mode)")
+    
     stage_1_transcribe(videos)
     stage_2_align(videos)
-    stage_3_diarize(videos)
+    # הערה: ויתרנו על Stage 3 (Diarization) כי הוא הכי כבד ל-CPU
     stage_4_processing(videos)
 
-    print(f"\nDone! All results saved to {OUTPUT_DIR}")
+    print(f"\n✅ Finished! Transcripts saved to: {OUTPUT_DIR}")
 
 if __name__ == "__main__":
     main()
