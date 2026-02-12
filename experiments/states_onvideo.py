@@ -4,11 +4,24 @@ import numpy as np
 import os
 from pathlib import Path
 from datetime import timedelta
+from dotenv import load_dotenv
 
-VIDEO_PATH = Path("videos/7 Principles For Teenagers To Become Millionaires.mp4") 
-JSON_PATH = Path("transcripts/7 Principles For Teenagers To Become Millionaires.json")  
+load_dotenv()
+
+import os
+
+input_video_dir = os.getenv("RAW_VIDEOS_DIR", "")
+input_transcript_dir = os.getenv("ROW_TRANSCRIPTS_DIR", "") 
+print(input_video_dir)
+print(input_transcript_dir)
+
+VIDEO_PATH = os.path.join(input_video_dir, "Iman_Gadzhi_7_Principles_For_Teenagers_To_Become_Millionaires.mp4")
+JSON_PATH = os.path.join(input_transcript_dir, "Iman_Gadzhi_7_Principles_For_Teenagers_To_Become_Millionaires.json")
+
 
 def analyze_dataset(video_path, json_path):
+    video_path = Path(video_path)
+    json_path = Path(json_path)
     # 1. בדיקת קיום קבצים
     if not video_path.exists() or not json_path.exists():
         print("Error: One or more files not found.")
@@ -32,7 +45,7 @@ def analyze_dataset(video_path, json_path):
         data = json.load(f)
 
     # נשתמש ב-word_segments כי זה הנתון המדויק ביותר
-    words = data.get('word_segments', [])
+    words = data.get('words', [])
     
     if not words:
         print("Error: No 'word_segments' found in JSON.")
@@ -53,7 +66,7 @@ def analyze_dataset(video_path, json_path):
         duration = end - start
         
         # חישוב פריימים (מעגלים למספר השלם הקרוב)
-        frames = int(duration * fps)
+        frames = (duration * fps)
         
         word_durations.append(duration)
         word_frames.append(frames)
