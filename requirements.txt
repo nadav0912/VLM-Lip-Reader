@@ -1,0 +1,33 @@
+# --- Core & Utilities ---
+numpy
+tqdm
+python-dotenv
+requests
+
+# --- Data Collection (YouTube) ---
+yt-dlp
+
+# --- Video Processing (OpenCV & MediaPipe) ---
+opencv-python
+mediapipe
+
+# --- Audio Processing & Transcription (WhisperX) ---
+# WhisperX requires special installation, see instructions below
+whisperx
+pandas
+scipy
+ffmpeg-python
+
+# --- Video Editing ---
+moviepy
+
+# --- Deep Learning (PyTorch) ---
+# It is recommended to install PyTorch separately to ensure support for CUDA (see instructions)
+torch
+torchvision
+torchaudio
+
+# --- Modeling & Metrics ---
+scikit-learn
+matplotlib
+tensorboard

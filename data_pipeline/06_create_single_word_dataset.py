@@ -94,8 +94,6 @@ def process_video(filename):
         
         local_results[clip_name] = w['word']
 
-    print(f"In {filename} we skipped {count_short_noise} short noise clips")
-
     cap.release()
     return local_results
 
