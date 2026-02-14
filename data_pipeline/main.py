@@ -9,7 +9,8 @@ SCRIPTS = [
     "data_pipeline/02_transcriber.py",
     "data_pipeline/03_analyze_video.py",
     "data_pipeline/04_extract_clips.py",
-    "data_pipeline/05_cut_lips.py"
+    "data_pipeline/05_cut_lips.py",
+    "data_pipeline/06_create_single_word_dataset.py"
 ]
 
 def format_time(seconds):

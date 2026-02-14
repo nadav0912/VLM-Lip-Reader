@@ -51,7 +51,20 @@ def release_memory():
     torch.cuda.empty_cache()
 
 def get_video_files():
-    return sorted(glob(os.path.join(INPUT_DIR, "*.mp4")))
+    all_videos = glob(os.path.join(INPUT_DIR, "*.mp4"))
+    
+    videos_to_process = []
+    
+    for video_path in all_videos:
+        filename = os.path.basename(video_path)
+        file_id = os.path.splitext(filename)[0]
+        
+        expected_json_path = os.path.join(OUTPUT_DIR, f"{file_id}.json")
+        
+        if not os.path.exists(expected_json_path):
+            videos_to_process.append(video_path)
+            
+    return sorted(videos_to_process)
 
 def clean_text(text):
     if not text: return ""
@@ -246,22 +259,23 @@ def stage_4_processing(videos):
             if "segments" in data:
                 for segment in data["segments"]:
                     for word_obj in segment["words"]:
-                        # Clean the word
+                        # 1. Cleaning
                         raw_word = word_obj.get("word", "")
                         cleaned_word = clean_text(raw_word)
                 
                         if not cleaned_word:
                             continue
 
-                        # Count the speaker
+                        # 2. Correction: update the word inside the object
+                        word_obj["word"] = cleaned_word 
+
+                        # 3. Continue with the regular logic...
                         speaker = word_obj.get("speaker")
                         speaker_counter[speaker] += 1
                             
-                        # Add the word if the start and end are not None
                         if word_obj["start"] is not None and word_obj["end"] is not None:
-                            all_words.append(word_obj)
-                        else:
-                            logger.warning(f"Word '{cleaned_word}' has no start or end time in {filename}")
+                            all_words.append(word_obj) # Now it saves the clean word
+
 
             # Identify the main speaker
             main_speaker = None

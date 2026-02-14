@@ -22,6 +22,7 @@ INPUT_LABELS_DIR = os.getenv("FINAL_LABELS_DIR")
 OUTPUT_LIPS_DIR = os.getenv("LIPS_VIDEOS_DIR")   
 
 TARGET_SIZE = int(os.getenv("LIPS_TARGET_SIZE")) 
+USE_GRAYSCALE = os.getenv("DATA_GRAYSCALE", "False").lower() == "true"
 
 os.makedirs(OUTPUT_LIPS_DIR, exist_ok=True)
 
@@ -32,9 +33,10 @@ def get_best_video_writer(output_path, fps, size):
     """
     # We currently rely on H.264 but the driver is missing
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    
-    out = cv2.VideoWriter(output_path, fourcc, fps, size)
-    
+        
+    # If working in grayscale, isColor should be False
+    out = cv2.VideoWriter(output_path, fourcc, fps, size, isColor=not USE_GRAYSCALE)  
+
     # Critical check - did we manage to open the file for writing?
     if not out.isOpened():
         print(f"❌ CRITICAL ERROR: Could not open video writer for {output_path}")
@@ -135,6 +137,9 @@ def process_video_lips(filename):
             # --- Step 3: Perform the cropping ---
             lips_frame = cv2.warpAffine(frame, M, (TARGET_SIZE, TARGET_SIZE), flags=cv2.INTER_CUBIC)            
             
+            if USE_GRAYSCALE:
+                lips_frame = cv2.cvtColor(lips_frame, cv2.COLOR_BGR2GRAY)
+
             out.write(lips_frame)
             saved_frames_count += 1
             
@@ -145,7 +150,7 @@ def process_video_lips(filename):
 
     cap.release()
     out.release()
-    print(f"\nvideo: {filename}, Total frames: {total_frames}, Frames with no landmarks: {frames_with_no_landmarks}")
+    #print(f"\nvideo: {filename}, Total frames: {total_frames}, Frames with no landmarks: {frames_with_no_landmarks}")
     return f"✅ {filename}: Saved {saved_frames_count} frames"
 
 

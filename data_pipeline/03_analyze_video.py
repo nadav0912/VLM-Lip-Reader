@@ -224,7 +224,6 @@ def main():
     videos = sorted([f for f in os.listdir(INPUT_VIDEO_DIR) if f.endswith(".mp4")])
     if not videos: return
 
-
     # Prepare the list of all tasks to do
     tasks = []
     for video_file in videos:

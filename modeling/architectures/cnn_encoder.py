@@ -82,7 +82,6 @@ DESIGN NOTES & ARCHITECTURAL CHOICES:
 
 
 # --- Main Model ---
-
 class CNNEncoder(nn.Module):
     def __init__(self, frames=24, llm_embed_dim=1536, num_classes=500, pretrain_mode=True):
         super().__init__()
@@ -109,6 +108,7 @@ class CNNEncoder(nn.Module):
 
         # 4. Classifier (Pretrain Mode)
         if self.pretrain_mode:
+            self.dropout = nn.Dropout(0.3)
             self.classifier = nn.Linear(256, num_classes)
 
     def forward(self, x):
@@ -133,10 +133,10 @@ class CNNEncoder(nn.Module):
         
         # Pretrain Mode - Classifier to predict a word.
         if self.pretrain_mode:
-            b = x.size(0) // 24  # Calculate the original batch size
-            x = x.view(b, 24, -1).mean(dim=1) # (B, 256)
+            x = x.view(b, t_new, -1).mean(dim=1) # (B, 256)
+            x = self.dropout(x)
             x = self.classifier(x)
-
+            return x
 
         # Fine-tuning Mode - Adapter to project the CNN features to the LLM space.
         else:
@@ -212,7 +212,7 @@ class VisualAdapter(nn.Module):
 
 
 if __name__ == "__main__":
-    # בדיקת מימדים
+    # Test the model
     model = CNNEncoder()
     dummy_video = torch.randn(2, 1, 20, 88, 88)
     output = model(dummy_video)

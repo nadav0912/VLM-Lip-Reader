@@ -194,7 +194,6 @@ def create_clips_manifest(analysis_path):
 # ==========================================
 # PART 2: CUT CLIPS & GENERATE LABELS
 # ==========================================
-
 def cut_video_clip_ffmpeg(video_path, start_time, duration, output_path):
     #Cut the video physically by exact times.
     cmd = [
