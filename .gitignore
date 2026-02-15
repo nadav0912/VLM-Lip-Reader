@@ -39,10 +39,8 @@ runs/*
 !runs/.gitkeep
 
 # --- Large Models (MediaPipe / PyTorch) ---
-*.task
 *.pt
 *.pth
-assets/models/*.task
 
 # --- Media Files (Safety Net) ---
 # רשת ביטחון למקרה ששמרת סרטון בתיקייה לא נכונה
