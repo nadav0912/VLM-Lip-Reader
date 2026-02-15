@@ -25,6 +25,7 @@ data/04_clips_dataset/labels/*
 data/04_clips_dataset/videos/*
 data/04_clips_dataset/05_lips_videos/*
 data/06_single_words_dataset/*
+runs/*
 
 
 # Keep the folder structure, but ignore content
@@ -35,6 +36,7 @@ data/06_single_words_dataset/*
 !data/04_clips_dataset/videos/.gitkeep
 !data/04_clips_dataset/05_lips_videos/.gitkeep
 !data/06_single_words_dataset/.gitkeep
+!runs/.gitkeep
 
 # --- Large Models (MediaPipe / PyTorch) ---
 *.task

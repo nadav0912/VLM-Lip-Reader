@@ -80,75 +80,6 @@ DESIGN NOTES & ARCHITECTURAL CHOICES:
 ==============================================================================
 """
 
-
-# --- Main Model ---
-class CNNEncoder(nn.Module):
-    def __init__(self, frames=24, llm_embed_dim=1536, num_classes=500, pretrain_mode=True):
-        super().__init__()
-        self.pretrain_mode = pretrain_mode
-        
-        # 1. 3D Front-end
-        self.frontend = nn.Sequential(
-            nn.Conv3d(1, 64, kernel_size=(3, 5, 5), stride=(1, 2, 2), padding=(1, 2, 2), bias=False),
-            nn.BatchNorm3d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool3d(kernel_size=(1, 3, 3), stride=(1, 2, 2), padding=(0, 1, 1))
-        )
-
-        # 2. 2D Backbone
-        self.stage1 = IdentityResidualBlock(64)
-        self.transition1 = ProjectionResidualBlock(64, 128)
-        self.stage2 = IdentityResidualBlock(128)
-        self.transition2 = ProjectionResidualBlock(128, 256)
-        self.stage3 = IdentityResidualBlock(256)
-
-        # 3. Aggregation & Adapter
-        self.gap = nn.AdaptiveAvgPool2d((1, 1)) # Global Average Pooling to reduce spatial dimensions to 1x1
-        self.adapter = VisualAdapter(cnn_dim=256, llm_dim=llm_embed_dim)
-
-        # 4. Classifier (Pretrain Mode)
-        if self.pretrain_mode:
-            self.dropout = nn.Dropout(0.3)
-            self.classifier = nn.Linear(256, num_classes)
-
-    def forward(self, x):
-        # x: (B, 1, T, 88, 88)
-        b, c, t, h, w = x.shape
-        
-        x = self.frontend(x) # (B, 64, T, 22, 22)
-        
-        # Prepare for 2D: Flatten Time into Batch
-        t_new = x.size(2) 
-        x = x.transpose(1, 2).contiguous().view(-1, 64, x.size(3), x.size(4))
-        
-        # Backbone
-        x = self.stage1(x)
-        x = self.transition1(x)
-        x = self.stage2(x)
-        x = self.transition2(x)
-        x = self.stage3(x)
-        
-        # Pooling to Vector
-        x = self.gap(x).view(x.size(0), -1) # (B*T, 256)
-        
-        # Pretrain Mode - Classifier to predict a word.
-        if self.pretrain_mode:
-            x = x.view(b, t_new, -1).mean(dim=1) # (B, 256)
-            x = self.dropout(x)
-            x = self.classifier(x)
-            return x
-
-        # Fine-tuning Mode - Adapter to project the CNN features to the LLM space.
-        else:
-            # Projection to LLM Space
-            x = self.adapter(x) # (B*T, 1536)
-            
-            # Reshape back to Sequence
-            x = x.view(b, t_new, -1) # (B, T, 1536)
-            
-            return x
-
-
 # 2D Residual Block for Identity Connection
 class IdentityResidualBlock(nn.Module):
     """
@@ -209,6 +140,88 @@ class VisualAdapter(nn.Module):
 
     def forward(self, x):
         return self.adapter(x)
+
+
+# --- Main Model ---
+class CNNEncoder(nn.Module):
+    def __init__(self, frames=24, llm_embed_dim=1536, num_classes=500, pretrain_mode=True):
+        super().__init__()
+        self.pretrain_mode = pretrain_mode
+        
+        # 1. 3D Front-end
+        self.frontend = nn.Sequential(
+            nn.Conv3d(1, 64, kernel_size=(3, 5, 5), stride=(1, 2, 2), padding=(1, 2, 2), bias=False),
+            nn.BatchNorm3d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=(1, 3, 3), stride=(1, 2, 2), padding=(0, 1, 1))
+        )
+
+        # 2. 2D Backbone
+        self.stage1 = IdentityResidualBlock(64)
+        self.transition1 = ProjectionResidualBlock(64, 128)
+        self.stage2 = IdentityResidualBlock(128)
+        self.transition2 = ProjectionResidualBlock(128, 256)
+        self.stage3 = IdentityResidualBlock(256)
+
+        # 3. Aggregation & Adapter
+        self.gap = nn.AdaptiveAvgPool2d((1, 1)) # Global Average Pooling to reduce spatial dimensions to 1x1
+        self.adapter = VisualAdapter(cnn_dim=256, llm_dim=llm_embed_dim)
+
+        # 4. Classifier (Pretrain Mode)
+        if self.pretrain_mode:
+            self.dropout = nn.Dropout(0.3)
+            self.classifier = nn.Linear(256, num_classes)
+
+        # Initialize weights for better convergence
+        self._init_weights()
+
+    def _init_weights(self):
+        # Initialize weights with Kaiming initialization
+        for m in self.modules():
+            if isinstance(m, (nn.Conv2d, nn.Conv3d, nn.Linear)):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm3d)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x):
+        # x: (B, 1, T, 88, 88)
+        b, c, t, h, w = x.shape
+        
+        x = self.frontend(x) # (B, 64, T, 22, 22)
+        
+        # Prepare for 2D: Flatten Time into Batch
+        t_new = x.size(2) 
+        x = x.transpose(1, 2).contiguous().view(-1, 64, x.size(3), x.size(4))
+        
+        # Backbone
+        x = self.stage1(x)
+        x = self.transition1(x)
+        x = self.stage2(x)
+        x = self.transition2(x)
+        x = self.stage3(x)
+        
+        # Pooling to Vector
+        x = self.gap(x).view(x.size(0), -1) # (B*T, 256)
+        
+        # Pretrain Mode - Classifier to predict a word.
+        if self.pretrain_mode:
+            x = x.view(b, t_new, -1).mean(dim=1) # (B, 256)
+            x = self.dropout(x)
+            x = self.classifier(x)
+            return x
+
+        # Fine-tuning Mode - Adapter to project the CNN features to the LLM space.
+        else:
+            # Projection to LLM Space
+            x = self.adapter(x) # (B*T, 1536)
+            
+            # Reshape back to Sequence
+            x = x.view(b, t_new, -1) # (B, T, 1536)
+            
+            return x
 
 
 if __name__ == "__main__":
