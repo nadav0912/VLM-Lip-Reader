@@ -45,6 +45,7 @@ def interpolate_point(p1, p2, alpha):
         p1[1] * (1 - alpha) + p2[1] * alpha   # Y
     ]
 
+
 def fill_missing_landmarks(landmarks_map):
     """
     Receives a dictionary of {index: landmarks}.
@@ -110,11 +111,8 @@ def fill_missing_landmarks(landmarks_map):
 
 
 def to_px(pt, img_width, img_height):
-    # Convert normalized coordinates to pixels
-    x, y = pt
-    if x <= 1.0 and y <= 1.0:
-        return float(x * img_width), float(y * img_height)
-    return float(x), float(y)
+    """Converts normalized coordinates to absolute pixels."""
+    return float(pt[0] * img_width), float(pt[1] * img_height)
 
 
 def get_mouth_roi_params(landmarks, img_width, img_height, is_normalized=True, padding_scale=1.25, engale_by_eye=False):
@@ -200,17 +198,62 @@ def calc_yaw_angle(landmarks):
     # Calculate the yaw angle (head rotation 0-1)
     # Calculates the horizontal symmetry ratio between the nose and ears to estimate head yaw (left/right rotation).
     """
-    # We use the distance between the nose and the ears
     nose_x = landmarks[1].x
     left_ear_x = landmarks[234].x
     right_ear_x = landmarks[454].x
     
+    # --- THE FIX: Extreme Profile Protection ---
+    # If the nose crosses the left ear or the right ear, it's an extreme profile.
+    # We immediately return 100.0 to force a "Bad Angle" rejection.
+    min_ear_x = min(left_ear_x, right_ear_x)
+    max_ear_x = max(left_ear_x, right_ear_x)
+    
+    if nose_x < min_ear_x or nose_x > max_ear_x:
+        return 100.0 
+    # ------------------------------------------
+
     # Use abs to ensure positive distances always
     dist_to_left = abs(nose_x - left_ear_x)
     dist_to_right = abs(nose_x - right_ear_x)
 
-    # Protect against division by zero (add epsilon to the denominator itself)
+    # Protect against division by zero 
     if dist_to_right < 1e-6:
         return 100.0 # Extreme angle (profile)
 
     return dist_to_left / dist_to_right
+
+
+def calc_pitch_angle(landmarks):
+    """
+    Calculates the pitch angle ratio (head rotation up/down).
+    Returns approximately 0.0 when looking straight ahead.
+    Positive values (> 0) indicate looking UP.
+    Negative values (< 0) indicate looking DOWN.
+    """
+    # MediaPipe face mesh landmark indices:
+    # 168: Bridge of the nose (between the eyes)
+    # 1: Tip of the nose
+    # 152: Bottom of the chin
+    top_y = landmarks[168].y
+    nose_y = landmarks[1].y
+    chin_y = landmarks[152].y
+    
+    # Calculate absolute vertical distances
+    upper_face_dist = abs(nose_y - top_y)
+    lower_face_dist = abs(chin_y - nose_y)
+    
+    total_dist = upper_face_dist + lower_face_dist
+    
+    # Protect against division by zero just in case
+    if total_dist < 1e-6:
+        return 0.0 
+        
+    # Calculate the ratio
+    # If looking straight: upper and lower are roughly equal -> ~0.0
+    # If looking UP: lower_face_dist > upper_face_dist -> positive
+    # If looking DOWN: upper_face_dist > lower_face_dist -> negative
+    pitch_ratio = (lower_face_dist - upper_face_dist) / total_dist
+    
+    # Note: Because human faces aren't perfectly symmetrical vertically, 
+    # perfectly straight might be slightly offset from exactly 0.0 (e.g., -0.05 or 0.05).
+    return pitch_ratio

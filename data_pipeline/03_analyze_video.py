@@ -20,6 +20,7 @@ from utils.video_processing import (
     extract_face_data, 
     calc_face_size_ratio, 
     calc_yaw_angle,
+    calc_pitch_angle,
     calc_movement_metrics
 )
 
@@ -39,6 +40,8 @@ YAW_MAX = float(os.getenv("YAW_THRESHOLD_MAX", 4.0))
 MOVEMENT_THRESHOLD = float(os.getenv("MOVEMENT_THRESHOLD"))
 YAW_THRESHOLD = float(os.getenv("YAW_THRESHOLD"))
 SIZE_THRESHOLD = float(os.getenv("SIZE_THRESHOLD"))
+PITCH_UP_MAX = float(os.getenv("PITCH_THRESHOLD_UP", 0.62))
+PITCH_DOWN_MAX = float(os.getenv("PITCH_THRESHOLD_DOWN", 0.13))
 
 os.makedirs(OUTPUT_ANALYSIS_DIR, exist_ok=True)
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -119,84 +122,87 @@ def analyze_single_video(video_path, json_path):
 
     print(f"Analyzing {video_name}...")
 
-    # Optimization: Update TQDM every 10 frames to reduce IO overhead
-    with tqdm(total=total_frames, unit="fr", miniters=10) as pbar:
-        frame_idx = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret: break
+    frame_idx = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
 
-            timestamp_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
-            current_time_sec = timestamp_ms / 1000.0
+        timestamp_ms = int(cap.get(cv2.CAP_PROP_POS_MSEC))
+        current_time_sec = timestamp_ms / 1000.0
 
-            # --- A. Optimized Audio Check ---
-            if frame_idx >= len(frame_statuses): break
-            audio_status = frame_statuses[frame_idx]            
-            
-            final_status = 0 # Default: Invalid
-            anchors = None
-            reject_reason = ""
-            
-            # --- Logic Flow ---
-            if audio_status == 0:
-                reject_reason = "Other Speaker"
+        # --- A. Optimized Audio Check ---
+        if frame_idx >= len(frame_statuses): break
+        audio_status = frame_statuses[frame_idx]            
+        
+        final_status = 0 # Default: Invalid
+        anchors = None
+        reject_reason = ""
+        
+        # --- Logic Flow ---
+        if audio_status == 0:
+            reject_reason = "Other Speaker"
+            prev_landmarks = None
+        else:
+            # Only run heavy MediaPipe if audio is potentially good
+            result = mp_handler.process(frame, timestamp_ms)
+
+            if not result.face_landmarks:
+                reject_reason = "No Face"
+                prev_landmarks = None
+            elif len(result.face_landmarks) > 1:
+                reject_reason = "Multiple Faces"
                 prev_landmarks = None
             else:
-                # Only run heavy MediaPipe if audio is potentially good
-                result = mp_handler.process(frame, timestamp_ms)
+                landmarks = result.face_landmarks[0]
+                anchors = extract_face_data(landmarks, width, height)
+                ratio = calc_face_size_ratio(landmarks)
+                yaw = calc_yaw_angle(landmarks)
+                pitch = calc_pitch_angle(landmarks)
+                dist, yaw_diff, size_diff = calc_movement_metrics(landmarks, prev_landmarks, yaw, prev_yaw, ratio, prev_ratio)
 
-                if not result.face_landmarks:
-                    reject_reason = "No Face"
+                # Yaw Angle Check
+                if not (YAW_MIN <= yaw <= YAW_MAX):
                     prev_landmarks = None
-                elif len(result.face_landmarks) > 1:
-                    reject_reason = "Multiple Faces"
+                    reject_reason = f"Bad Angle ({yaw:.2f})"
+                
+                # Pitch Angle Check 
+                elif not (-PITCH_DOWN_MAX <= pitch <= PITCH_UP_MAX):
                     prev_landmarks = None
+                    reject_reason = f"Bad Pitch Angle ({pitch:.2f})"
+
+                # Face Size Check
+                elif ratio < MIN_FACE_RATIO:
+                    prev_landmarks = None
+                    reject_reason = f"Face Too Small ({ratio:.2f})"
+                
+                # Movement Check
+                elif dist > MOVEMENT_THRESHOLD or yaw_diff > YAW_THRESHOLD or size_diff > SIZE_THRESHOLD:
+                    prev_landmarks = None
+                    final_status = -1
+                    reject_reason = f"Movement ({dist:.2f}, {yaw_diff:.2f}, {size_diff:.2f})"
                 else:
-                    landmarks = result.face_landmarks[0]
-                    anchors = extract_face_data(landmarks, width, height)
-                    ratio = calc_face_size_ratio(landmarks)
-                    yaw = calc_yaw_angle(landmarks)
-                    dist, yaw_diff, size_diff = calc_movement_metrics(landmarks, prev_landmarks, yaw, prev_yaw, ratio, prev_ratio)
+                    # Success!
+                    final_status = int(audio_status)
+                    valid_frames_count += 1
 
-                    # Yaw Angle Check
-                    if not (YAW_MIN <= yaw <= YAW_MAX):
-                        prev_landmarks = None
-                        reject_reason = f"Bad Angle ({yaw:.2f})"
-                    
-                    # Face Size Check
-                    elif ratio < MIN_FACE_RATIO:
-                        prev_landmarks = None
-                        reject_reason = f"Face Too Small ({ratio:.2f})"
-                    
-                    # Movement Check
-                    elif dist > MOVEMENT_THRESHOLD or yaw_diff > YAW_THRESHOLD or size_diff > SIZE_THRESHOLD:
-                        prev_landmarks = None
-                        final_status = -1
-                        reject_reason = f"Movement ({dist:.2f}, {yaw_diff:.2f}, {size_diff:.2f})"
-                    else:
-                        # Success!
-                        final_status = int(audio_status)
-                        valid_frames_count += 1
+                    prev_landmarks = landmarks
+                    prev_yaw = yaw
+                    prev_ratio = ratio
 
-                        prev_landmarks = landmarks
-                        prev_yaw = yaw
-                        prev_ratio = ratio
+        # --- Save Data ---
+        frame_entry = {
+            "i": frame_idx,
+            "t": round(current_time_sec, 3),
+            "s": final_status
+        }
+        if anchors:
+            frame_entry["a"] = anchors
+        if reject_reason != "":
+            frame_entry["r"] = reject_reason
 
-            # --- Save Data ---
-            frame_entry = {
-                "i": frame_idx,
-                "t": round(current_time_sec, 3),
-                "s": final_status
-            }
-            if anchors:
-                frame_entry["a"] = anchors
-            if reject_reason != "":
-                frame_entry["r"] = reject_reason
-
-            analyzed_frames.append(frame_entry)
-            
-            frame_idx += 1
-            pbar.update(1)
+        analyzed_frames.append(frame_entry)
+        
+        frame_idx += 1
 
     cap.release()
     mp_handler.close()

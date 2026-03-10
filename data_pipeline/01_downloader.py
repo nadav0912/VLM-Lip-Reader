@@ -84,8 +84,9 @@ def download_single_video(entry):
     # yt-dlp settings
     ydl_opts = {
         # 1. Quality: The best possible, up to the threshold we set
-        'format': f'bestvideo[height<={TARGET_HEIGHT}][ext=mp4]+bestaudio[ext=m4a]/best[height<={TARGET_HEIGHT}][ext=mp4]',
-        
+#        'format': f'bestvideo[height<={TARGET_HEIGHT}][ext=mp4]+bestaudio[ext=m4a]/best[height<={TARGET_HEIGHT}][ext=mp4]',
+        'format': f'bestvideo[height<={TARGET_HEIGHT}]+bestaudio/best[height<={TARGET_HEIGHT}]',
+
         # 2. Save path
         'outtmpl': os.path.join(DOWNLOAD_DIR, f'{final_filename}.%(ext)s'),
         

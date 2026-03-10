@@ -129,7 +129,7 @@ class ProjectionResidualBlock(nn.Module):
 
 class VisualAdapter(nn.Module):
     # Adapter to project the CNN features to the LLM space.
-    def __init__(self, cnn_dim=256, llm_dim=1536):
+    def __init__(self, cnn_dim=256, llm_dim=2048):
         super().__init__()
         self.adapter = nn.Sequential(
             nn.Linear(cnn_dim, llm_dim),

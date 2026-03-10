@@ -5,8 +5,124 @@ import numpy as np
 import subprocess
 from tqdm import tqdm
 import math
+import sys
 
-def create_debug_video(video_path, analysis_path, transcript_path, segments, output_path):
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+
+from utils.video_processing import get_mouth_roi_params
+
+
+def visualize_full_analysis(video_name, raw_videos_dir, analyses_dir, transcripts_dir, output_dir):
+    """
+    קורא את הסרטון המקורי, נתוני הניתוח (Landmarks, Status) ונתוני התמלול (Words),
+    ומייצר סרטון ויזואליזציה שכולל הכל בשכבות.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 1. טעינת קבצי ה-JSON (ניתוח + תמלול)
+    file_id = os.path.splitext(video_name)[0]
+    analysis_json_name = f"{file_id}_analysis.json"
+    transcript_json_name = f"{file_id}.json"
+    
+    analysis_path = os.path.join(analyses_dir, analysis_json_name)
+    transcript_path = os.path.join(transcripts_dir, transcript_json_name)
+
+    with open(analysis_path, 'r', encoding='utf-8') as f:
+        analysis_data = json.load(f)
+    frames_dict = {f["i"]: f for f in analysis_data.get("frames", [])}
+
+    with open(transcript_path, 'r', encoding='utf-8') as f:
+        transcript_data = json.load(f)
+    words = transcript_data.get("words", [])
+
+    # 2. פתיחת הסרטון והכנת פלט
+    cap = cv2.VideoCapture(os.path.join(raw_videos_dir, video_name))
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    out = cv2.VideoWriter(os.path.join(output_dir, f"vis_{video_name}"), 
+                          cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+
+    print(f"🎬 Processing: {video_name}")
+
+    # 3. לולאת רינדור פריימים
+    for frame_idx in tqdm(range(total_frames), desc="Rendering"):
+        ret, frame = cap.read()
+        if not ret: break
+
+        current_time = frame_idx / fps
+
+        # --- א. כתוביות (חיפוש המילה הנוכחית לפי זמן) ---
+        current_word = ""
+        for w_info in words:
+            if w_info["start"] <= current_time <= w_info["end"]:
+                current_word = w_info["word"]
+                break
+
+        # --- ב. שכבת הניתוח (מסגרת, סיבה, נקודות ופה) ---
+        frame_info = frames_dict.get(frame_idx)
+        if frame_info:
+            status = frame_info.get("s", 0)
+            reason = frame_info.get("r", "")
+            landmarks = frame_info.get("a", {})
+
+            # 1. מסגרת ירוקה/אדומה
+            color = (0, 255, 0) if status > 0 else (0, 0, 255)
+            cv2.rectangle(frame, (0, 0), (w, h), color, 15)
+
+            # 2. סיבת דחייה
+            if reason:
+                cv2.putText(frame, f"REJECTED: {reason}", (30, 70), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 6)
+                cv2.putText(frame, f"REJECTED: {reason}", (30, 70), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 2)
+
+            # 3. ציור Landmarks וריבוע הפה
+            if landmarks:
+                # ציור הנקודות עצמן (בצהוב)
+                for pt in landmarks.values():
+                    cv2.circle(frame, tuple(pt), 4, (0, 255, 255), -1)
+
+                try:
+                    # שימוש בפונקציה שלך לקבלת פרמטרי הריבוע
+                    roi_params = get_mouth_roi_params(landmarks, w, h)
+                    
+                    # המרה ל-4 נקודות וציור הריבוע המסתובב (בכחול)
+                    box = cv2.boxPoints(roi_params)
+                    box = np.int32(box) 
+                    cv2.drawContours(frame, [box], 0, (255, 0, 0), 3)
+                except Exception as e:
+                    pass # מדלג אם הפונקציה נכשלת על פריים ספציפי
+
+        # --- ג. ציור הכתובית בתחתית המסך ---
+        if current_word:
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 2
+            thickness = 4
+            
+            # חישוב רוחב הטקסט כדי למרכז אותו
+            text_size = cv2.getTextSize(current_word, font, font_scale, thickness)[0]
+            text_x = (w - text_size[0]) // 2
+            text_y = h - 50
+            
+            # קו מתאר שחור ואז טקסט לבן לקריאות מושלמת
+            cv2.putText(frame, current_word, (text_x, text_y), font, font_scale, (0, 0, 0), thickness + 4)
+            cv2.putText(frame, current_word, (text_x, text_y), font, font_scale, (255, 255, 255), thickness)
+
+        out.write(frame)
+
+    cap.release()
+    out.release()
+    print("✅ Done!")
+  
+
+def create_segments_debug_video(video_path, analysis_path, transcript_path, segments, output_path):
     """
     Generates a visual debug video with:
     - Green overlay for KEEP segments / Red for DISCARD
@@ -314,8 +430,10 @@ def create_captioned_video(video_path, json_path, output_path):
 
 
 if __name__ == "__main__":
-    v_path = "data/04_dataset/videos/v002_c000.mp4"
-    j_path = "data/04_dataset/labels/v002_c000.json"
-    o_path = "test_subtitle_result.mp4"
-    
-    create_captioned_video(v_path, j_path, o_path)
+     visualize_full_analysis(
+        video_name="Unknown_Speaker_Easy_Boring_Business_Ideas_to_Start_in_2026_-_Answering_your_Questions.mp4",
+        raw_videos_dir="data/01_raw_videos",
+        analyses_dir="data/03_frame_analysis",
+        transcripts_dir="data/02_raw_transcripts",
+        output_dir="experiments/examples"
+    )
