@@ -106,15 +106,19 @@ def download_single_video(entry):
             'preferedformat': 'mp4',
         }],
         
-        'postprocessor_args': [
-            '-r', str(TARGET_FPS),                 # Fixed FPS
-            '-vf', f'scale=-2:{TARGET_HEIGHT}',    # Fixed Resolution
-            '-c:v', 'libx264',                     # Video encoding
-            '-preset', 'fast',                     # Encoding speed
-            '-crf', '23',                          # Quality
-            '-c:a', 'aac',                         # Audio encoding
-            '-b:a', '128k'
-        ],
+        'postprocessor_args': {
+            # Define that these commands should only be run at the final conversion step, not intermediate steps
+            'video_convertor': [
+                '-r', str(TARGET_FPS),                 # Fixed FPS
+                '-vf', f'scale=-2:{TARGET_HEIGHT}',    # Fixed Resolution
+                '-c:v', 'libx264',                     # Video encoding
+                '-pix_fmt', 'yuv420p',                 # CRITICAL: Ensures compatibility for libx264
+                '-preset', 'fast',                     # Encoding speed
+                '-crf', '23',                          # Quality
+                '-c:a', 'aac',                         # Audio encoding
+                '-b:a', '128k'
+            ]
+        },
         
         # Quiet (for tqdm)
         'quiet': True,

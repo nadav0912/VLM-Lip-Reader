@@ -6,6 +6,7 @@ import statistics
 import re
 from collections import Counter
 
+
 def pad_collate(batch):
     """
     Function that takes a list of samples (Tuples) from the Dataset,
