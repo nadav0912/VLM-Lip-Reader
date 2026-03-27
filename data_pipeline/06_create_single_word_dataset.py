@@ -12,7 +12,7 @@ load_dotenv()
 VID_DIR = os.getenv("LIPS_VIDEOS_DIR")
 LBL_DIR = os.getenv("FINAL_LABELS_DIR")
 OUT_DIR = os.getenv("SINGLE_WORD_CLIPS_DIR")
-PAD = int(os.getenv("PADDING_FRAMES", 2))
+PAD = int(os.getenv("PADDING_FRAMES"))
 MASTER_JSON = os.path.join(OUT_DIR, "labels.json")
 
 os.makedirs(OUT_DIR, exist_ok=True)
