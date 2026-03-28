@@ -30,9 +30,11 @@ torch.backends.cuda.matmul.allow_tf32 = True
 # Settings
 load_dotenv()
 
-INPUT_DIR = os.getenv("RAW_VIDEOS_DIR", "data/01_raw_videos")
+INPUT_DIR = os.getenv("DOWNLOAD_VIDEOS_DIR", "data/01_raw_videos")
 OUTPUT_DIR = os.getenv("ROW_TRANSCRIPTS_DIR", "data/02_transcribed")
 LOG_DIR = os.getenv("LOGS_DIR", "logs")
+METADATA_FILE =  os.getenv("DOWNLOAD_VIDEOS_METADATA")
+
 HF_TOKEN = os.getenv("HUGGINGFACE_TOKEN")
 
 # Model settings
@@ -51,20 +53,7 @@ def release_memory():
     torch.cuda.empty_cache()
 
 def get_video_files():
-    all_videos = glob(os.path.join(INPUT_DIR, "*.mp4"))
-    
-    videos_to_process = []
-    
-    for video_path in all_videos:
-        filename = os.path.basename(video_path)
-        file_id = os.path.splitext(filename)[0]
-        
-        expected_json_path = os.path.join(OUTPUT_DIR, f"{file_id}.json")
-        
-        if not os.path.exists(expected_json_path):
-            videos_to_process.append(video_path)
-            
-    return sorted(videos_to_process)
+    return sorted(glob(os.path.join(INPUT_DIR, "*.mp4")))
 
 def clean_text(text):
     if not text: return ""
@@ -100,9 +89,13 @@ def stage_1_transcribe(videos):
             audio = whisperx.load_audio(video_path)
             result = model.transcribe(audio, batch_size=BATCH_SIZE)
             
-            # Save intermediate result
-            with open(json_output_path, "w", encoding="utf-8") as f:
-                json.dump(result, f, indent=4, ensure_ascii=False)
+            detected_lang = result.get("language", "unknown")
+            if detected_lang != "en":
+                logger.warning(f"⚠️ Video {filename} detected as {detected_lang} language. skip video.")
+            else:
+                # Save intermediate result
+                with open(json_output_path, "w", encoding="utf-8") as f:
+                    json.dump(result, f, indent=4, ensure_ascii=False)
             
             # Release local memory
             del audio
@@ -149,6 +142,10 @@ def stage_2_align(videos):
             # Check if Align was already performed (if there are words?)
             if "segments" in result and len(result["segments"]) > 0 and "words" in result["segments"][0]:
                 continue 
+
+            # If the final "words" list exists, Stage 4 already finished this file
+            if "words" in result and isinstance(result["words"], list):
+                continue
 
             audio = whisperx.load_audio(video_path)
             
@@ -206,6 +203,10 @@ def stage_3_diarize(videos):
             if "segments" in result and len(result["segments"]) > 0 and "speaker" in result["segments"][0]:
                 continue
 
+            # If the final "words" list exists, Stage 4 already finished this file
+            if "words" in result and isinstance(result["words"], list):
+                continue
+
             audio = whisperx.load_audio(video_path)
             
             # Perform the diarization
@@ -235,6 +236,12 @@ def stage_3_diarize(videos):
 # ==========================================
 def stage_4_processing(videos):
     print(f"\nSTAGE 4: Normalizing, Cleaning & Filtering...")
+
+    # Get all videos metadata
+    all_metadata = {}
+    if METADATA_FILE and os.path.exists(METADATA_FILE):
+        with open(METADATA_FILE, "r", encoding="utf-8") as mf:
+            all_metadata = json.load(mf)
 
     for video_path in tqdm(videos, desc="Stage 4 - Processing"):
         filename = os.path.basename(video_path)
@@ -273,7 +280,7 @@ def stage_4_processing(videos):
                         speaker = word_obj.get("speaker")
                         speaker_counter[speaker] += 1
                             
-                        if word_obj["start"] is not None and word_obj["end"] is not None:
+                        if word_obj.get("start") is not None and word_obj.get("end") is not None:
                             all_words.append(word_obj) # Now it saves the clean word
 
 
@@ -315,6 +322,11 @@ def stage_4_processing(videos):
                 "total_words": len(all_words),
                 "kept_words": count_kept_words
             }
+
+            # Save the raw video metadata along with the words 
+            video_meta = all_metadata.get(file_id, {})
+            data.update(video_meta)
+
 
             # Save the final result
             with open(json_output_path, "w", encoding="utf-8") as f:

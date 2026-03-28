@@ -20,11 +20,11 @@ from utils.common import setup_logger, sanitize_filename
 load_dotenv()
 
 # Paths
-DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "data/01_raw_videos")
+DOWNLOAD_DIR = os.getenv("DOWNLOAD_VIDEOS_DIR", "data/01_raw_videos")
+METADATA_FILE =  os.getenv("DOWNLOAD_VIDEOS_METADATA", "data/01_raw_videos/metadata.json")
 SOURCES_FILE = os.getenv("SOURCES_FILE", "assets/configs/source_urls.json")
 COOKIES_FILE = os.getenv("COOKIES_FILE", "assets/config/youtube_cookies.txt")
 LOG_FOLDER = os.getenv("LOGS_DIR", "logs")
-METADATA_FILE =  os.path.join(DOWNLOAD_DIR, f"metadata.json")
 
 # Quality settings
 TARGET_HEIGHT = int(os.getenv("TARGET_HEIGHT", 1080))
@@ -133,6 +133,7 @@ def download_single_video(entry):
                 full_meta = entry.copy() 
                 full_meta.update(video_meta) 
                 full_meta['video_id'] = final_filename 
+                full_meta['fps'] = TARGET_FPS
                 
                 with metadata_lock:
                     global_metadata[final_filename] = full_meta
