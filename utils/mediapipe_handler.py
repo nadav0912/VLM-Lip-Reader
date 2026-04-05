@@ -37,9 +37,13 @@ class MediaPipeHandler():
         # 1. Check if the model exists
         self._ensure_model_exists()
 
-        # 2. Set the basic options
-        base_options = python.BaseOptions(model_asset_path=self.MODEL_PATH)
-        
+
+        # 2. Set the basic options (with GPU Delegate)
+        base_options = python.BaseOptions(
+            model_asset_path=self.MODEL_PATH,
+            delegate=python.BaseOptions.Delegate.GPU
+        )
+
         # 3. Set the running mode and callback
         if self.mode == "LIVE":
             running_mode = vision.RunningMode.LIVE_STREAM
@@ -62,12 +66,23 @@ class MediaPipeHandler():
             result_callback=callback
         )
 
-        # 4. Create the landmarker
+        # 4. Create the landmarker (With GPU to CPU Fallback)
         try:
+            # Try to initialize with GPU first
             self.landmarker = vision.FaceLandmarker.create_from_options(options)
+            print("MediaPipe Initialized: Using GPU Acceleration")
         except Exception as e:
-            print(f"❌ Error initializing MediaPipe: {e}")
-            raise e
+            print(f"⚠️ GPU Initialization failed: {e}")
+            print("Falling back to CPU...")
+            
+            # Modify options to use CPU delegate instead
+            options.base_options.delegate = python.BaseOptions.Delegate.CPU
+            try:
+                self.landmarker = vision.FaceLandmarker.create_from_options(options)
+                print("MediaPipe Initialized: Using CPU")
+            except Exception as e2:
+                print(f"❌ Error initializing MediaPipe on CPU as well: {e2}")
+                raise e2
 
     def _ensure_model_exists(self):
         #Download the model if it doesn't exist

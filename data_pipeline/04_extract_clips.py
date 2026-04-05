@@ -6,29 +6,36 @@ import sys
 from dotenv import load_dotenv
 from tqdm import tqdm
 from bisect import bisect_left
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
-load_dotenv()
-
+# Adjust the path to import from utils
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
-
+    
+from utils.common import setup_logger
 from utils.visual_data import create_segments_debug_video
 
+load_dotenv()
+
+
+
+
 # Paths
-INPUT_VIDEO_DIR = os.getenv("RAW_VIDEOS_DIR")
+INPUT_VIDEO_DIR = os.getenv("DOWNLOAD_VIDEOS_DIR")
 INPUT_TRANSCRIPT_DIR = os.getenv("ROW_TRANSCRIPTS_DIR")
 INPUT_ANALYSIS_DIR = os.getenv("ANALYSIS_DIR")
-OUTPUT_DATASET_DIR = os.getenv("FINAL_DATASET_DIR")
-VIDEOS_OUT_DIR = os.getenv("FINAL_VIDEOS_DIR")
-LABELS_OUT_DIR = os.getenv("FINAL_LABELS_DIR")
+OUTPUT_DATASET_DIR = os.getenv("CLIPS_DATASET_DIR")
+VIDEOS_OUT_DIR = os.getenv("CLIPS_VIDEOS_DIR")
+LABELS_OUT_DIR = os.getenv("CLIPS_LABELS_DIR")
+LOG_DIR = os.getenv("LOGS_DIR", "logs")
 
 # Create the directories
 os.makedirs(OUTPUT_DATASET_DIR, exist_ok=True)
 os.makedirs(VIDEOS_OUT_DIR, exist_ok=True)
 os.makedirs(LABELS_OUT_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
 
 # Settings to extract the clips
 SMOOTHING_TOLERANCE = float(os.getenv("SMOOTHING_TOLERANCE")) # How many bad frames in a row we tolerate (skip)
@@ -36,16 +43,12 @@ MAX_INTERNAL_SILENCE_SEC = float(os.getenv("MAX_INTERNAL_SILENCE_SEC")) # Maximu
 PADDING_SEC = float(os.getenv("PADDING_SEC")) # How much silence to add before and after the speech. If it's more - we add padding.
 MIN_CLIP_DURATION_SEC = float(os.getenv("MIN_CLIP_DURATION_SEC")) # Minimum duration of the final clip. Shorter than this - we discard.
 
+# Setup Logger
+logger = setup_logger('extractor', os.path.join(LOG_DIR, 'extract_clips.log'))
+
 # ==========================================
 # PART 1: RECOGNIZE THE CLIPS
 # ==========================================
-def load_analysis_data(analysis_path):
-    if not os.path.exists(analysis_path):
-        return None
-    with open(analysis_path, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
 def get_status_array(frames_data, total_frames):
     # Convert the list of frames to a numpy array for fast access
     # 0=Invalid, 1=Speaking, 2=Silence
@@ -98,7 +101,7 @@ def find_speech_islands(status_arr, fps):
     for i in range(n):
         s = status_arr[i]
         
-        if s == 1: # דיבור
+        if s == 1: # Speaking
             if current_start == -1:
                 current_start = i
             current_end = i # Extend the end
@@ -165,12 +168,11 @@ def add_padding_and_filter(clips, status_arr, fps):
     return final_manifest
 
 
-def create_clips_manifest(analysis_path):
-    data = load_analysis_data(analysis_path)
+def create_clips_manifest(data):
     if not data: return None
     
     fps = data.get("fps")
-    total_frames = data["stats"]["total"]
+    total_frames = data["frame_stats"]["total"]
     
     # 1. Get the data
     raw_arr = get_status_array(data["frames"], total_frames)
@@ -202,27 +204,27 @@ def cut_video_clip_ffmpeg(video_path, start_time, duration, output_path):
         "-i", video_path,              # Input video
         "-t", f"{duration:.6f}",       # Duration
         "-an",                         # No audio
-        "-c:v", "libx264",             # We use the regular and good encoder
-        "-crf", "17",                  # Almost perfect quality (Lossless-like)
-        "-preset", "fast",             # Speed
+        "-c:v", "h264_nvenc",          # שימוש ב-GPU לגזירה מהירה
+        "-preset", "p4",               # איזון בין מהירות לאיכות ב-GPU
+        "-cq", "17",                   # איכות מקסימלית (מקביל ל-crf)
         
         # The flag that saves the state:
-        # keyint=1: every frame is a keyframe (like a standalone image)
-        # scenecut=0: turns off smart optimizations that might move frames
-        "-x264-params", "keyint=1:scenecut=0", 
+        "-x264-params", "keyint=1:scenecut=0",
+        "-threads", "1", 
         "-loglevel", "error",
         output_path
     ]
+    
     try:
         subprocess.run(cmd, check=True)
         return True
     except subprocess.CalledProcessError as e:
+        logger.error(f"FFmpeg Error on {output_path}: {e}")
         print(f"❌ FFmpeg Error: {e}")
         return False
 
 
-def create_label_json(segment, frames_map, full_words_list, fps, resolution, source_name, output_path):
-    #Create the final JSON.
+def create_label_json(segment, frames_map, full_words_list, fps, resolution, source_name, output_path, clip_id, main_speaker):    #Create the final JSON.
     #It receives the full words list, filters only what belongs to the clip,
     #and converts all times (words and frames) to relative time (starting from 0.0).
  
@@ -304,22 +306,27 @@ def create_label_json(segment, frames_map, full_words_list, fps, resolution, sou
     # 5. Save the final object
     label_data = {
         "metadata": {
+            "clip_id": clip_id,
             "source_video": source_name,
+            "main_speaker": main_speaker,
+            "original_start_time": clip_start_time,
+            "original_end_time": clip_end_time,
             "fps": fps,
             "resolution": resolution,
-            "duration": segment.get("duration", clip_end_time - clip_start_time),
+            "duration": round(clip_end_time - clip_start_time, 3),
             "total_frames": len(clip_frames_data),
             "clip_word_count": len(relative_words)
         },
         "text": {
             "sentence": clip_text,
-            "words": relative_words  # המילים עם הזמנים החדשים
+            "words": relative_words  
         },
-        "frames": clip_frames_data   # הפריימים עם הזמנים החדשים והנקודות
+        "frames": clip_frames_data   
     }
 
     with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(label_data, f, separators=(',', ':'))
+        #json.dump(label_data, f, separators=(',', ':'))
+        json.dump(label_data, f, indent=4, ensure_ascii=False)
 
 # ==========================================
 # PART 3: WORKER & MAIN
@@ -334,34 +341,38 @@ def process_video_task(args):
     transcript_path = os.path.join(INPUT_TRANSCRIPT_DIR, f"{file_id}.json")
     
     if not (os.path.exists(analysis_path) and os.path.exists(transcript_path)):
+        logger.warning(f"Skipped {filename} (Data missing)")
         return f"⚠️ Skipped {filename} (Data missing)"
 
+    with open(analysis_path, 'r', encoding='utf-8') as f:
+        analysis_data = json.load(f)
+        
+    # Load the total word count for statistics
+    with open(transcript_path, 'r', encoding='utf-8') as f:
+        transcript_data = json.load(f)
+        words = transcript_data.get("words", [])
+        main_speaker = transcript_data.get("main_speaker", "Unknown")
+    
     # Find the good clips from the video
-    manifest = create_clips_manifest(analysis_path)
+    manifest = create_clips_manifest(analysis_data)
     if not manifest or not manifest["segments"]:
+        logger.info(f"No valid clips found in {filename}")
         return f"No clips in {filename}"
 
     segments = manifest["segments"]
     
     # Map for fast access to the exact times
-    with open(analysis_path, 'r', encoding='utf-8') as f:
-        analysis_data = json.load(f)
-        fps = analysis_data.get("fps")
-        resolution = analysis_data.get("resolution")
-        frames_list = analysis_data.get("frames", [])
-
+    fps = analysis_data.get("fps")
+    resolution = analysis_data.get("resolution")
+    frames_list = analysis_data.get("frames", [])
     frames_map = {frames_list[i]["i"]: frames_list[i] for i in range(len(frames_list))}
-
-    # Load the total word count for statistics
-    with open(transcript_path, 'r', encoding='utf-8') as f:
-        words = json.load(f).get("words", [])
         
     created_count = 0
     
-    # 2. Cut and save the clips
+    # Cut and save the clips
     for clip_idx, seg in enumerate(segments):
-        # Anonymous name: v001_c001
-        base_name = f"v{video_idx:03d}_c{clip_idx:03d}"
+        # Anonymous name: VideoID_ClipNumber
+        base_name = f"{file_id}_{clip_idx:03d}"
         mp4_out = os.path.join(VIDEOS_OUT_DIR, f"{base_name}.mp4")
         json_out = os.path.join(LABELS_OUT_DIR, f"{base_name}.json")
         
@@ -376,7 +387,7 @@ def process_video_task(args):
         # 1. Cut the video
         if cut_video_clip_ffmpeg(video_path, real_start, exact_duration, mp4_out):
             # 2. Create the JSON label
-            create_label_json(seg, frames_map, words, fps, resolution, filename, json_out)
+            create_label_json(seg, frames_map, words, fps, resolution, filename, json_out, base_name, main_speaker)
             created_count += 1
             
     return f"Video {video_idx:03d}: Created {created_count} clips"
@@ -387,13 +398,27 @@ def main():
         print("❌ No videos found.")
         return
 
-    print(f"🚀 Processing {len(videos)} videos -> {OUTPUT_DATASET_DIR}")
+    print(f"Processing {len(videos)} videos -> {OUTPUT_DATASET_DIR}")
     
     # Create task list
     tasks = [(i+1, v) for i, v in enumerate(videos)]
     
-    with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        results = list(tqdm(executor.map(process_video_task, tasks), total=len(tasks)))
+    optimal_workers = max(1, int(os.cpu_count() * 0.8))
+    results = []
+
+    with ProcessPoolExecutor(max_workers=optimal_workers) as executor:
+        future_to_task = {executor.submit(process_video_task, task): task for task in tasks}
+        
+        with tqdm(total=len(tasks), desc="Extracting Clips") as pbar:
+            for future in as_completed(future_to_task):
+                try:
+                    res = future.result()
+                    results.append(res)
+                except Exception as e:
+                    task_info = future_to_task[future]
+                    logger.error(f"Process crashed on video {task_info[1]}: {e}")
+                    print(f"❌ Process crashed on video {task_info[1]}: {e}")
+                pbar.update(1)
 
     print("\n🏁 DONE:")
     for res in results:

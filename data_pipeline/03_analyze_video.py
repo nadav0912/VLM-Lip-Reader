@@ -1,13 +1,22 @@
+# --- Imports setup ---
 import os
 import json
-import cv2
 import numpy as np
 from tqdm import tqdm
 import sys
-from concurrent.futures import ProcessPoolExecutor
 from dotenv import load_dotenv
 
-# --- Imports setup ---
+# Set single-threaded execution for numpy to avoid conflicts in multiprocessing
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+import cv2
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+# Adjust the path to import from utils
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
@@ -79,6 +88,7 @@ def precompute_audio_map(words, total_frames, fps):
             
     return audio_map
 
+
 def analyze_single_video(video_path, json_path):
     video_name = os.path.basename(video_path)
     file_id = os.path.splitext(video_name)[0]
@@ -106,9 +116,12 @@ def analyze_single_video(video_path, json_path):
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-    # Pre-calculate duration per frame to avoid cap.get() calls
-    frame_duration = 1.0 / fps 
-
+    if fps <= 0 or total_frames <= 0:
+        logger.error(f"Corrupted video file: {video_name}")
+        cap.release()
+        mp_handler.close()
+        return
+    
     valid_frames_count = 0
     analyzed_frames = []
     
@@ -119,6 +132,7 @@ def analyze_single_video(video_path, json_path):
     prev_landmarks = None
     prev_yaw = 0.0
     prev_ratio = 0.0
+
 
     print(f"Analyzing {video_name}...")
 
@@ -207,22 +221,32 @@ def analyze_single_video(video_path, json_path):
     cap.release()
     mp_handler.close()
 
-    # 3. Save
+
+    # 3. Save (Atomic Write)
     output_data = {
-        "video_name": video_name,
-        "fps": fps,
+        "video_id": file_id, # משמש כמפתח זר לחיבור עם קובץ הכתוביות
+        "fps": fps,          # נשאר רק כ-Sanity check
         "resolution": [width, height],
-        "stats": {"valid": valid_frames_count, "total": total_frames},
+        "frame_stats": {     # שינינו את השם כדי לא לדרוס את ה-stats של המילים בשלב הבא
+            "valid": valid_frames_count, 
+            "total": total_frames
+        },
         "frames": analyzed_frames
     }
 
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(output_data, f, separators=(',', ':'))
+    temp_output_path = output_path + ".tmp"
+    with open(temp_output_path, 'w', encoding='utf-8') as f:
+        #json.dump(output_data, f, separators=(',', ':'))
+        json.dump(output_data, f, indent=4, ensure_ascii=False)
+    
+    os.replace(temp_output_path, output_path)
+
 
 def process_video_wrapper(args):
     # Wrap the function to fit the Pool
     video_path, json_path = args
     analyze_single_video(video_path, json_path)
+
 
 def main():
     if not os.path.exists(INPUT_VIDEO_DIR): return
@@ -239,14 +263,26 @@ def main():
             video_path = os.path.join(INPUT_VIDEO_DIR, video_file)
             tasks.append((video_path, json_path))
 
-    print(f"Starting Parallel Analysis on {len(tasks)} videos using {os.cpu_count()} cores")
 
-    # max_workers = number of cores (can be reduced if the computer is slow)
-    with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        # Use tqdm to see overall progress
-        list(tqdm(executor.map(process_video_wrapper, tasks), total=len(tasks), unit="vid"))
+    optimal_workers = max(1, int(os.cpu_count() * 0.8))
+    print(f"Starting Parallel Analysis on {len(tasks)} videos using {optimal_workers} cores")
+
+    with ProcessPoolExecutor(max_workers=optimal_workers) as executor:
+        # Map each video to the executor and keep track of futures
+        future_to_video = {executor.submit(process_video_wrapper, task): task for task in tasks}
+        
+        with tqdm(total=len(tasks), desc="Analyzing", unit="vid") as pbar:
+            for future in as_completed(future_to_video):
+                try:
+                    future.result() # This will raise exceptions if any occurred in the worker
+                except Exception as e:
+                    task_info = future_to_video[future]
+                    logger.error(f"Process crashed on video {os.path.basename(task_info[0])}: {e}")
+                
+                pbar.update(1)
 
     print("\nAll videos analyzed successfully.")
+
 
 if __name__ == "__main__":
     main()
