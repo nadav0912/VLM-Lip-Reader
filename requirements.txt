@@ -31,3 +31,4 @@ torchaudio
 scikit-learn
 matplotlib
 tensorboard
+wordcloud

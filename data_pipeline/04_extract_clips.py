@@ -224,7 +224,7 @@ def cut_video_clip_ffmpeg(video_path, start_time, duration, output_path):
         return False
 
 
-def create_label_json(segment, frames_map, full_words_list, fps, resolution, source_name, output_path, clip_id, main_speaker):    #Create the final JSON.
+def create_label_json(segment, frames_map, full_words_list, fps, resolution, source_name, output_path, clip_id, main_speaker, gender):    #Create the final JSON.
     #It receives the full words list, filters only what belongs to the clip,
     #and converts all times (words and frames) to relative time (starting from 0.0).
  
@@ -308,7 +308,8 @@ def create_label_json(segment, frames_map, full_words_list, fps, resolution, sou
         "metadata": {
             "clip_id": clip_id,
             "source_video": source_name,
-            "main_speaker": main_speaker,
+            "speaker": main_speaker,
+            "gender": gender,
             "original_start_time": clip_start_time,
             "original_end_time": clip_end_time,
             "fps": fps,
@@ -351,7 +352,8 @@ def process_video_task(args):
     with open(transcript_path, 'r', encoding='utf-8') as f:
         transcript_data = json.load(f)
         words = transcript_data.get("words", [])
-        main_speaker = transcript_data.get("main_speaker", "Unknown")
+        main_speaker = transcript_data.get("speaker", "Unknown")
+        gender = transcript_data.get("gender", "Unknown")
     
     # Find the good clips from the video
     manifest = create_clips_manifest(analysis_data)
@@ -387,7 +389,7 @@ def process_video_task(args):
         # 1. Cut the video
         if cut_video_clip_ffmpeg(video_path, real_start, exact_duration, mp4_out):
             # 2. Create the JSON label
-            create_label_json(seg, frames_map, words, fps, resolution, filename, json_out, base_name, main_speaker)
+            create_label_json(seg, frames_map, words, fps, resolution, filename, json_out, base_name, main_speaker, gender)
             created_count += 1
             
     return f"Video {video_idx:03d}: Created {created_count} clips"

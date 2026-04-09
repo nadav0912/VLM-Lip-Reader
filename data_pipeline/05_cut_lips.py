@@ -1,10 +1,18 @@
+import os
+
+# Set single-threaded execution for numpy/OpenCV to avoid conflicts in multiprocessing
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import cv2
 import json
-import os
 import sys
 import numpy as np
 from tqdm import tqdm
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,16 +23,21 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from utils.video_processing import get_mouth_roi_params, fill_missing_landmarks
+from utils.common import setup_logger
 
 # --- Config ---
-INPUT_VIDEOS_DIR = os.getenv("FINAL_VIDEOS_DIR")     
-INPUT_LABELS_DIR = os.getenv("FINAL_LABELS_DIR")
+INPUT_VIDEOS_DIR = os.getenv("CLIPS_VIDEOS_DIR")     
+INPUT_LABELS_DIR = os.getenv("CLIPS_LABELS_DIR")
 OUTPUT_LIPS_DIR = os.getenv("LIPS_VIDEOS_DIR")   
-
+LOG_DIR = os.getenv("LOGS_DIR", "logs")
 TARGET_SIZE = int(os.getenv("LIPS_TARGET_SIZE")) 
-USE_GRAYSCALE = os.getenv("DATA_GRAYSCALE", "False").lower() == "true"
+USE_GRAYSCALE = os.getenv("DATA_GRAYSCALE").lower() == "true"
 
 os.makedirs(OUTPUT_LIPS_DIR, exist_ok=True)
+
+os.makedirs(LOG_DIR, exist_ok=True)
+logger = setup_logger('cut_lips', os.path.join(LOG_DIR, 'cut_lips.log'))
+
 
 def get_best_video_writer(output_path, fps, size):
     """
@@ -37,14 +50,11 @@ def get_best_video_writer(output_path, fps, size):
     # If working in grayscale, isColor should be False
     out = cv2.VideoWriter(output_path, fourcc, fps, size, isColor=not USE_GRAYSCALE)  
 
-    # Critical check - did we manage to open the file for writing?
     if not out.isOpened():
-        print(f"❌ CRITICAL ERROR: Could not open video writer for {output_path}")
-        # Last try with MJPG (works everywhere but larger files)
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-        out = cv2.VideoWriter(output_path.replace(".mp4", ".avi"), fourcc, fps, size)
+        logger.error(f"CRITICAL ERROR: Could not open video writer for {output_path}")
     
     return out
+
 
 def process_video_lips(filename):
     # Take a video and a JSON, cut the lips using Affine Transform, and save the new video
@@ -56,10 +66,18 @@ def process_video_lips(filename):
     json_path = os.path.join(INPUT_LABELS_DIR, f"{file_id}.json")
     output_path = os.path.join(OUTPUT_LIPS_DIR, filename)
 
+    # If the output already exists, skip processing
+    if os.path.exists(output_path):
+        logger.info(f"Skipped {filename} (Already exists)")
+        return f"Skipped {filename} (Already exists)"
+
     # 1. Check files
     if not (os.path.exists(video_path) and os.path.exists(json_path)):
+        logger.warning(f"⚠️ Skipped {filename} (Missing video or JSON)")
         return f"⚠️ Skipped {filename}"
     
+    logger.info(f"⏳ Starting to process {filename}...")
+
     # 2. Load the data (JSON)
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
@@ -84,10 +102,9 @@ def process_video_lips(filename):
     orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
     out = get_best_video_writer(output_path, fps, (TARGET_SIZE, TARGET_SIZE))
-    #out = get_best_video_writer(output_path, fps, (orig_w, orig_h))
-
 
     if not out.isOpened():
+        logger.error(f"❌ Failed to create video writer for {filename}")
         return f"❌ Failed to create video writer for {filename}"
 
     saved_frames_count = 0
@@ -98,13 +115,14 @@ def process_video_lips(filename):
     for i in range(total_frames):
         ret, frame = cap.read()
         if not ret: 
-            #print(f"❌ Error reading frame {i} from {video_path}")
+            logger.error(f"❌ Error reading frame {i} from {video_path}")
             break
         
         # If there are no landmarks for this frame - skip (don't save black)
         if i not in landmarks_map:
             frames_with_no_landmarks.append(i)
             count_no_landmarks += 1
+            logger.warning(f"No landmarks for frame {i} in {json_path}")
             #print(f"❌ No landmarks for frame {i} in {json_path}")
             continue
 
@@ -145,17 +163,19 @@ def process_video_lips(filename):
             
         except Exception as e:
             # If the calculation fails due to invalid points, skip
-            print(f"❌ Error processing frame {i} in {json_path}: {e}")
+            logger.error(f"❌ Error processing frame {i} in {filename}: {e}")
             continue
 
     cap.release()
     out.release()
-    #print(f"\nvideo: {filename}, Total frames: {total_frames}, Frames with no landmarks: {frames_with_no_landmarks}")
+
+    logger.info(f"✅ {filename} Done: Total frames: {total_frames}, Frames with no landmarks: {frames_with_no_landmarks}, Saved: {saved_frames_count}")
     return f"✅ {filename}: Saved {saved_frames_count} frames"
 
 
 def main():
     if not os.path.exists(INPUT_VIDEOS_DIR):
+        logger.error("❌ No input directory found.")
         print("❌ No input directory found.")
         return
 
@@ -165,8 +185,19 @@ def main():
     print(f"Target Size: {TARGET_SIZE}x{TARGET_SIZE}")
     
     # Run in parallel
-    with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        results = list(tqdm(executor.map(process_video_lips, videos), total=len(videos)))
+    optimal_workers = max(1, int(os.cpu_count() * 0.8))
+    
+    with ProcessPoolExecutor(max_workers=optimal_workers) as executor:
+        future_to_video = {executor.submit(process_video_lips, video): video for video in videos}
+        
+        results = []
+        for future in tqdm(as_completed(future_to_video), total=len(videos)):
+            try:
+                res = future.result()
+                results.append(res)
+            except Exception as e:
+                video_name = future_to_video[future]
+                logger.error(f"Process crashed on video {video_name}: {e}")
 
     print("\nDone.")
 
