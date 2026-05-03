@@ -4,8 +4,38 @@ import pandas as pd
 from wordcloud import WordCloud
 import os
 import json
+import shutil
+import random
+import cv2
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 from dotenv import load_dotenv
 load_dotenv()
+
+# ================================================================================== #
+# GLOBAL CONFIGURATION & PATHS
+# ================================================================================== #
+# 1. Single Words Paths
+WORDS_SRC_DIR = os.getenv("SINGLE_WORD_CLIPS_DIR")
+SINGLE_WORDS_JSON = os.path.join(WORDS_SRC_DIR, "labels.json") if WORDS_SRC_DIR else ""
+
+# 2. Sentences Paths
+SENTENCES_LABELS_DIR = os.getenv("CLIPS_LABELS_DIR")
+SENTENCES_SRC_DIR = os.getenv("CLIPS_DATASET_DIR")
+SENTENCES_VIDEOS_DIR = os.getenv("CLIPS_VIDEOS_DIR")
+SENTENCES_LIPS_DIR = os.getenv("LIPS_VIDEOS_DIR")
+
+# 3. Output Release Paths (Build everything in 07_statistics first)
+STATISTICS_DIR = os.getenv("STATISTICS_DIR")
+STATS_IMG_DIR = os.path.join(STATISTICS_DIR, "visualizations")
+STATS_JSON_FILE = os.path.join(STATISTICS_DIR, "dataset_summary.json")
+EXAMPLES_DIR = os.path.join(STATISTICS_DIR, "examples")
+
+# Final destination for packaging
+KAGGLE_RELEASE_DIR = os.path.abspath(os.path.join(os.getcwd(), "data/Kaggle_Release_Build"))
+
+# Set font for subtitles in examples
+FONT_PATH = "arial.ttf"
 
 
 # ================================================================================== #
@@ -256,79 +286,315 @@ def calculate_and_save_sentences_stats(df, json_path):
     print(f"✅ Sentences statistics saved. (Total Video Time: {round(total_minutes, 2)} minutes)")
 
 
+# ================================================================================== #
+# DATASET PACKAGING (FOR MANUAL UPLOAD)
+# ================================================================================== #
+def smart_copy(src, dst):
+    if os.path.isdir(src):
+        os.makedirs(dst, exist_ok=True)
+        for item in os.listdir(src):
+            smart_copy(os.path.join(src, item), os.path.join(dst, item))
+    else:
+        if not os.path.exists(dst): shutil.copy2(src, dst)
+
+
+def package_dataset_for_kaggle():
+    print("\n📦 Packaging dataset for manual Kaggle upload (Safe Copy)...")
+    sentences_dest = os.path.join(KAGGLE_RELEASE_DIR, "sentences")
+    words_dest = os.path.join(KAGGLE_RELEASE_DIR, "single_words")
+    
+    os.makedirs(os.path.join(sentences_dest, "full_face_videos"), exist_ok=True)
+    os.makedirs(os.path.join(sentences_dest, "cropped_lips_videos"), exist_ok=True)
+    os.makedirs(os.path.join(sentences_dest, "raw_labels"), exist_ok=True)
+    os.makedirs(os.path.join(words_dest, "cropped_lips_videos"), exist_ok=True)
+
+    if os.path.exists(SENTENCES_VIDEOS_DIR): smart_copy(SENTENCES_VIDEOS_DIR, os.path.join(sentences_dest, "full_face_videos"))
+    if os.path.exists(SENTENCES_LIPS_DIR): smart_copy(SENTENCES_LIPS_DIR, os.path.join(sentences_dest, "cropped_lips_videos"))
+    if os.path.exists(SENTENCES_LABELS_DIR): smart_copy(SENTENCES_LABELS_DIR, os.path.join(sentences_dest, "raw_labels"))
+
+    if os.path.exists(WORDS_SRC_DIR):
+        for item in os.listdir(WORDS_SRC_DIR):
+            src_item = os.path.join(WORDS_SRC_DIR, item)
+            if item.endswith(".mp4"):
+                smart_copy(src_item, os.path.join(words_dest, "cropped_lips_videos", item))
+            elif item == "labels.json":
+                smart_copy(src_item, os.path.join(words_dest, "raw_labels.json"))
+
+    if os.path.exists(STATISTICS_DIR):
+        smart_copy(STATISTICS_DIR, KAGGLE_RELEASE_DIR)
+
+
+# ================================================================================== #
+# VISUAL EXAMPLES GENERATOR (OPENCV & PILLOW)
+# ================================================================================== #
+def draw_text_with_outline(img_pil, text, position, font_size=16):
+    """ מצייר טקסט על התמונה עם קו מתאר שחור לקריאות מקסימלית """
+    draw = ImageDraw.Draw(img_pil)
+    try:
+        font = ImageFont.truetype(FONT_PATH, font_size)
+    except IOError:
+        font = ImageFont.load_default()
+        
+    x, y = position
+    for adj in range(-2, 3):
+        for opp in range(-2, 3):
+            if adj != 0 or opp != 0:
+                draw.text((x+adj, y+opp), text, font=font, fill=(0, 0, 0))
+    draw.text((x, y), text, font=font, fill=(255, 255, 255))
+    return img_pil
+
+
+def get_active_word(words_list, current_time):
+    for w in words_list:
+        if w["start"] <= current_time <= w["end"]:
+            return w["word"]
+    return ""
+
+
+def process_single_video_example(input_video_path, json_data, output_path, draw_landmarks=False):
+    """ מעבד סרטון בודד (פנים או שפתיים) ומוסיף לו כתוביות """
+    cap = cv2.VideoCapture(input_video_path)
+    if not cap.isOpened(): return
+
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+
+    words_list = json_data["text"]["words"]
+    frames_data = {f["index"]: f for f in json_data.get("frames", [])}
+    
+    # --- תנאי גודל פונט ---
+    # אם זה סרטון שפתיים (רוחב קטן), פונט קטן. אחרת, פונט גדול לסרטון פנים מלא.
+    is_lips_video = w < 500  # סרטוני שפתיים הם לרוב סביב 100-200 פיקסלים ברוחב
+    font_size = 14 if is_lips_video else 100
+    y_offset = h - 35 if is_lips_video else h - 120
+    char_width_approx = 3 if is_lips_video else 18
+    # ----------------------
+
+    frame_idx = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
+            
+        current_time = frame_idx / fps
+        active_word = get_active_word(words_list, current_time)
+        
+        if draw_landmarks and frame_idx in frames_data:
+            lm = frames_data[frame_idx]["landmarks"]
+            if lm:
+                cv2.rectangle(frame, (lm["mouth_l"][0]-10, lm["mouth_t"][1]-10), 
+                              (lm["mouth_r"][0]+10, lm["mouth_b"][1]+10), (0, 255, 0), 2)
+
+        if active_word:
+            img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            text_x = (w // 2) - (len(active_word) * char_width_approx) 
+            draw_text_with_outline(img_pil, active_word, (text_x, y_offset), font_size=font_size)
+            frame = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
+        out.write(frame)
+        frame_idx += 1
+
+    cap.release()
+    out.release()
+
+
+def process_side_by_side_example(full_vid_path, lips_vid_path, json_data, output_path):
+    """ מחבר את סרטון הפנים וסרטון השפתיים אחד ליד השני עם כתוביות למטה """
+    cap_f = cv2.VideoCapture(full_vid_path)
+    cap_l = cv2.VideoCapture(lips_vid_path)
+    
+    if not cap_f.isOpened() or not cap_l.isOpened(): return
+
+    fps = cap_f.get(cv2.CAP_PROP_FPS)
+    w_f, h_f = int(cap_f.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap_f.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    w_l, h_l = int(cap_l.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap_l.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    # הגדלת אזור השפתיים שיתאים לגובה הפנים המלאות (כדי שאפשר יהיה לחבר יפה)
+    scale = h_f / h_l if h_l > 0 else 1
+    new_w_l = int(w_l * scale)
+    combined_w = w_f + new_w_l
+
+    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (combined_w, h_f))
+    words_list = json_data["text"]["words"]
+    frames_data = {f["index"]: f for f in json_data.get("frames", [])}
+    
+    frame_idx = 0
+    while True:
+        ret_f, frame_f = cap_f.read()
+        ret_l, frame_l = cap_l.read()
+        
+        if not ret_f or not ret_l: break
+        
+        # ציור מלבן על הפנים
+        if frame_idx in frames_data:
+            lm = frames_data[frame_idx]["landmarks"]
+            if lm:
+                cv2.rectangle(frame_f, (lm["mouth_l"][0]-10, lm["mouth_t"][1]-10), 
+                              (lm["mouth_r"][0]+10, lm["mouth_b"][1]+10), (0, 255, 0), 2)
+
+        # שינוי גודל וחיבור הצדדים
+        frame_l_resized = cv2.resize(frame_l, (new_w_l, h_f))
+        combined_frame = cv2.hconcat([frame_f, frame_l_resized])
+        
+        # הוספת כתוביות באמצע הסרטון המשולב
+        active_word = get_active_word(words_list, frame_idx / fps)
+        if active_word:
+            img_pil = Image.fromarray(cv2.cvtColor(combined_frame, cv2.COLOR_BGR2RGB))
+            text_x = (combined_w // 2) - (len(active_word) * 20)
+            draw_text_with_outline(img_pil, active_word, (text_x, h_f - 150), font_size=100)
+            combined_frame = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
+        out.write(combined_frame)
+        frame_idx += 1
+
+    cap_f.release()
+    cap_l.release()
+    out.release()
+
+
+def process_slow_mo_word_example(video_filename, word_data, output_path):
+    """ מאט סרטון מילה בודדת לרבע מהירות (0.25x), ממרכז טקסט מוקטן ומוסיף תווית """
+    input_path = os.path.join(WORDS_SRC_DIR, video_filename)
+    cap = cv2.VideoCapture(input_path)
+    if not cap.isOpened(): return
+
+    # שומרים על ה-FPS המקורי וניצור את ההאטה על ידי הכפלת פריימים (4x)
+    original_fps = cap.get(cv2.CAP_PROP_FPS) 
+    w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    out = cv2.VideoWriter(output_path, cv2.VideoWriter_fourcc(*'mp4v'), original_fps, (w, h))
+
+    word_text = word_data["word"]
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
+        
+        img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        
+        # 1. תווית הילוך איטי (פונט קטנטן למעלה)
+        draw_text_with_outline(img_pil, "0.25x", (5, 5), font_size=8)
+        
+        # 2. כתובית המילה (פונט מוקטן וממורכז)
+        text_x = (w // 2) - (len(word_text) * 4)
+        draw_text_with_outline(img_pil, word_text, (text_x, h - 30), font_size=14)
+        
+        frame_with_text = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+        
+        # כתיבת הפריים 4 פעמים = האטה של 0.25x
+        out.write(frame_with_text)
+        out.write(frame_with_text)
+        out.write(frame_with_text)
+        out.write(frame_with_text)
+
+    cap.release()
+    out.release()
+
+
+def generate_all_visual_examples():
+    """ פונקציית המעטפת המרכזית שבוחרת דגימות ומייצרת את כל הסוגים """
+    print("\n🎬 Generating Visual Examples...")
+    os.makedirs(EXAMPLES_DIR, exist_ok=True)
+    
+    # --- 1. משפטים: פנים, שפתיים, וצד-לצד ---
+    if os.path.exists(SENTENCES_LABELS_DIR):
+        all_json = [f for f in os.listdir(SENTENCES_LABELS_DIR) if f.endswith('.json')]
+        long_clips = []
+        for jf in all_json:
+            with open(os.path.join(SENTENCES_LABELS_DIR, jf), 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if data["metadata"]["clip_word_count"] > 10:
+                    long_clips.append((jf, data))
+                    
+        if long_clips:
+            selected_file, selected_data = random.choice(long_clips)
+            clip_id = selected_data["metadata"]["clip_id"]
+            
+            f_vid = os.path.join(SENTENCES_VIDEOS_DIR, f"{clip_id}.mp4")
+            l_vid = os.path.join(SENTENCES_LIPS_DIR, f"{clip_id}.mp4")
+            
+            # א. סרטון פנים מלא
+            if os.path.exists(f_vid):
+                print(f"   -> Creating Full Face example for {clip_id}...")
+                process_single_video_example(f_vid, selected_data, os.path.join(EXAMPLES_DIR, f"example_fullface.mp4"), draw_landmarks=True)
+            
+            # ב. סרטון שפתיים בלבד
+            if os.path.exists(l_vid):
+                print(f"   -> Creating Lips Only example for {clip_id}...")
+                process_single_video_example(l_vid, selected_data, os.path.join(EXAMPLES_DIR, f"example_lips.mp4"))
+                
+            # ג. צד לצד (מרהיב!)
+            if os.path.exists(f_vid) and os.path.exists(l_vid):
+                print(f"   -> Creating Side-by-Side example for {clip_id}...")
+                process_side_by_side_example(f_vid, l_vid, selected_data, os.path.join(EXAMPLES_DIR, f"example_side_by_side.mp4"))
+
+    # --- 2. מילים בודדות: Slow Motion ---
+    if os.path.exists(SINGLE_WORDS_JSON):
+        with open(SINGLE_WORDS_JSON, 'r', encoding='utf-8') as f:
+            words_data = json.load(f)
+            
+        sample_keys = random.sample(list(words_data.keys()), min(3, len(words_data)))
+        for i, key in enumerate(sample_keys):
+            print(f"   -> Creating Slow-Mo Word example {i+1}...")
+            process_slow_mo_word_example(key, words_data[key], os.path.join(EXAMPLES_DIR, f"example_word_{i+1}.mp4"))
+
+    print("✅ All visual examples created successfully in Kaggle_Release_Build/examples!")
+
 
 # ================================================================================== #
 # MAIN EXECUTION
 # ================================================================================== #
 def main():
-    print("🚀 Starting Data Processing and Statistics Generation...")
+    print("🚀 Starting Data Processing, Statistics Generation, and Packaging...")
 
-    # 1. Define paths (Adjust these env variables to match your actual .env keys if needed)
-    SINGLE_WORDS_JSON =  os.getenv("SINGLE_WORD_CLIPS_DIR") + "/labels.json"
-    SENTENCES_LABELS_DIR = os.getenv("CLIPS_LABELS_DIR")
-    
-    # Kaggle Release Structure
-    OUT_DIR = os.getenv("STATISTICS_DIR")
-    STATS_IMG_DIR = os.path.join(OUT_DIR, "stats")
-    STATS_JSON_FILE = os.path.join(OUT_DIR, "summary_stats.json")
-
-    # 2. Create necessary directories
-    os.makedirs(OUT_DIR, exist_ok=True)
+    if os.path.exists(KAGGLE_RELEASE_DIR):
+        shutil.rmtree(KAGGLE_RELEASE_DIR)
+    os.makedirs(KAGGLE_RELEASE_DIR, exist_ok=True)
     os.makedirs(STATS_IMG_DIR, exist_ok=True)
     
-    # Initialize/Clear the summary_stats.json file at the start of the run
     with open(STATS_JSON_FILE, 'w', encoding='utf-8') as f:
         json.dump({}, f)
 
-    # ==========================================
     # 3. PROCESS SINGLE WORDS
-    # ==========================================
     print("\n⏳ Processing Single Words Dataset...")
     df_words = generate_single_words_dataFrame(SINGLE_WORDS_JSON)
-    
     if df_words is not None and not df_words.empty:
-        # Save CSV for Kaggle users
-        words_csv_path = os.path.join(OUT_DIR, "single_words_metadata.csv")
+        words_csv_path = os.path.join(STATISTICS_DIR, "single_words_metadata.csv")
         df_words.to_csv(words_csv_path, index=False, encoding='utf-8-sig')
-        print(f"💾 Saved {words_csv_path}")
         
-        # Generate Graphs
-        print("📊 Generating Single Words Graphs...")
+        print("   -> Generating Single Words visualizations...")
         plot_top_words_bar(df_words, STATS_IMG_DIR)
         plot_words_per_speaker(df_words, STATS_IMG_DIR)
         plot_word_duration_distribution(df_words, STATS_IMG_DIR)
         generate_word_cloud(df_words, STATS_IMG_DIR)
         
-        # Calculate and Save Stats
         calculate_and_save_single_words_stats(df_words, STATS_JSON_FILE)
-    else:
-        print("⚠️ No single words data processed.")
 
-    # ==========================================
     # 4. PROCESS SENTENCES
-    # ==========================================
     print("\n⏳ Processing Sentences Dataset...")
     df_sentences = process_sentences_data(SENTENCES_LABELS_DIR)
-    
     if df_sentences is not None and not df_sentences.empty:
-        # Save CSV for Kaggle users
-        sentences_csv_path = os.path.join(OUT_DIR, "sentences_metadata.csv")
+        sentences_csv_path = os.path.join(STATISTICS_DIR, "sentences_metadata.csv")
         df_sentences.to_csv(sentences_csv_path, index=False, encoding='utf-8-sig')
-        print(f"💾 Saved {sentences_csv_path}")
         
-        # Generate Graphs
-        print("📊 Generating Sentences Graphs...")
+        print("   -> Generating Sentences visualizations...")
         plot_sentence_word_count_distribution(df_sentences, STATS_IMG_DIR)
         plot_sentence_duration_distribution(df_sentences, STATS_IMG_DIR)
         
-        # Calculate and Save Stats
         calculate_and_save_sentences_stats(df_sentences, STATS_JSON_FILE)
-    else:
-        print("⚠️ No sentences data processed.")
+    
+    # 5. CREATE EXAMPLES
+    generate_all_visual_examples()
 
-    print(f"\n🎉 All done! Everything is packed and ready in the '{OUT_DIR}' directory.")
+    # 6. PACKAGE
+    package_dataset_for_kaggle()
 
-
+    # 7. FINISH
+    print("\n🎉 All done!")
+    print(f"📁 Your dataset is perfectly organized and waiting in: {KAGGLE_RELEASE_DIR}")
+    print("\nNext steps on your Linux server:")
+    print("1. Run this command to zip the folder:")
+    print(f"   zip -r vlm_lip_reading_dataset.zip Kaggle_Release_Build/")
+    print("2. Download the .zip file to your PC using WinSCP.")
+    print("3. Upload manually via Kaggle.com -> Create -> New Dataset.")
 
 if __name__ == "__main__":
     main()

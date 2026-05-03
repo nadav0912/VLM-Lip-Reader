@@ -3,6 +3,7 @@ numpy
 tqdm
 python-dotenv
 requests
+pillow
 
 # --- Data Collection (YouTube) ---
 yt-dlp
