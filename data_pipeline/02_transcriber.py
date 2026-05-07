@@ -277,9 +277,14 @@ def stage_4_processing(videos):
                         word_obj["word"] = cleaned_word 
 
                         # 3. Continue with the regular logic...
-                        speaker = word_obj.get("speaker")
-                        speaker_counter[speaker] += 1
-                            
+                        speaker = word_obj.get("speaker", "Unknown")
+
+                        # If speaker is unknow add it to word word object (for later) else count it
+                        if speaker == "Unknown":
+                            word_obj["speaker"] = speaker
+                        else:
+                            speaker_counter[speaker] += 1
+                        
                         if word_obj.get("start") is not None and word_obj.get("end") is not None:
                             all_words.append(word_obj) # Now it saves the clean word
 

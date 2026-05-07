@@ -3,6 +3,7 @@ import seaborn as sns
 import pandas as pd
 from wordcloud import WordCloud
 import os
+import sys
 import json
 import shutil
 import random
@@ -11,6 +12,13 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from dotenv import load_dotenv
 load_dotenv()
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
+from utils.video_processing import get_mouth_roi_params
 
 # ================================================================================== #
 # GLOBAL CONFIGURATION & PATHS
@@ -382,8 +390,10 @@ def process_single_video_example(input_video_path, json_data, output_path, draw_
         if draw_landmarks and frame_idx in frames_data:
             lm = frames_data[frame_idx]["landmarks"]
             if lm:
-                cv2.rectangle(frame, (lm["mouth_l"][0]-10, lm["mouth_t"][1]-10), 
-                              (lm["mouth_r"][0]+10, lm["mouth_b"][1]+10), (0, 255, 0), 2)
+                rect = get_mouth_roi_params(lm, w, h, is_normalized=False)
+                box = cv2.boxPoints(rect)
+                box = np.int32(box) 
+                cv2.drawContours(frame, [box], 0, (0, 255, 0), 2)
 
         if active_word:
             img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -429,9 +439,11 @@ def process_side_by_side_example(full_vid_path, lips_vid_path, json_data, output
         if frame_idx in frames_data:
             lm = frames_data[frame_idx]["landmarks"]
             if lm:
-                cv2.rectangle(frame_f, (lm["mouth_l"][0]-10, lm["mouth_t"][1]-10), 
-                              (lm["mouth_r"][0]+10, lm["mouth_b"][1]+10), (0, 255, 0), 2)
-
+                rect = get_mouth_roi_params(lm, w_f, h_f, is_normalized=False)
+                box = cv2.boxPoints(rect)
+                box = np.int32(box)
+                cv2.drawContours(frame_f, [box], 0, (0, 255, 0), 2)
+            
         # שינוי גודל וחיבור הצדדים
         frame_l_resized = cv2.resize(frame_l, (new_w_l, h_f))
         combined_frame = cv2.hconcat([frame_f, frame_l_resized])
@@ -490,41 +502,55 @@ def process_slow_mo_word_example(video_filename, word_data, output_path):
 
 
 def generate_all_visual_examples():
-    """ פונקציית המעטפת המרכזית שבוחרת דגימות ומייצרת את כל הסוגים """
+    """ בוחרת דגימות באופן אקראי ויעיל ומייצרת את כל סוגי הדוגמאות """
     print("\n🎬 Generating Visual Examples...")
     os.makedirs(EXAMPLES_DIR, exist_ok=True)
     
     # --- 1. משפטים: פנים, שפתיים, וצד-לצד ---
     if os.path.exists(SENTENCES_LABELS_DIR):
-        all_json = [f for f in os.listdir(SENTENCES_LABELS_DIR) if f.endswith('.json')]
-        long_clips = []
-        for jf in all_json:
+        all_json_files = [f for f in os.listdir(SENTENCES_LABELS_DIR) if f.endswith('.json')]
+        
+        # מערבבים את רשימת שמות הקבצים כדי להתחיל מנקודה אקראית
+        random.shuffle(all_json_files)
+        
+        selected_clips = []
+        
+        # עוברים על הקבצים רק עד שאנחנו מוצאים 3 שעונים על התנאי
+        for jf in all_json_files:
             with open(os.path.join(SENTENCES_LABELS_DIR, jf), 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if data["metadata"]["clip_word_count"] > 10:
-                    long_clips.append((jf, data))
-                    
-        if long_clips:
-            selected_file, selected_data = random.choice(long_clips)
-            clip_id = selected_data["metadata"]["clip_id"]
+                try:
+                    data = json.load(f)
+                    if data.get("metadata", {}).get("clip_word_count", 0) > 10:
+                        selected_clips.append((jf, data))
+                        
+                        # ברגע שמצאנו 3, מפסיקים את הלולאה (אין צורך לקרוא עוד קבצים)
+                        if len(selected_clips) == 3:
+                            break
+                except json.JSONDecodeError:
+                    continue
+
+        if selected_clips:
+            example_types = ["fullface", "lips", "side_by_side"]
             
-            f_vid = os.path.join(SENTENCES_VIDEOS_DIR, f"{clip_id}.mp4")
-            l_vid = os.path.join(SENTENCES_LIPS_DIR, f"{clip_id}.mp4")
-            
-            # א. סרטון פנים מלא
-            if os.path.exists(f_vid):
-                print(f"   -> Creating Full Face example for {clip_id}...")
-                process_single_video_example(f_vid, selected_data, os.path.join(EXAMPLES_DIR, f"example_fullface.mp4"), draw_landmarks=True)
-            
-            # ב. סרטון שפתיים בלבד
-            if os.path.exists(l_vid):
-                print(f"   -> Creating Lips Only example for {clip_id}...")
-                process_single_video_example(l_vid, selected_data, os.path.join(EXAMPLES_DIR, f"example_lips.mp4"))
+            for i, ex_type in enumerate(example_types):
+                # אם מצאנו פחות מ-3, נשתמש בראשון שוב כשנצטרך
+                sample_data = selected_clips[i] if i < len(selected_clips) else selected_clips[0]
+                clip_id = sample_data[1]["metadata"]["clip_id"]
                 
-            # ג. צד לצד (מרהיב!)
-            if os.path.exists(f_vid) and os.path.exists(l_vid):
-                print(f"   -> Creating Side-by-Side example for {clip_id}...")
-                process_side_by_side_example(f_vid, l_vid, selected_data, os.path.join(EXAMPLES_DIR, f"example_side_by_side.mp4"))
+                f_vid = os.path.join(SENTENCES_VIDEOS_DIR, f"{clip_id}.mp4")
+                l_vid = os.path.join(SENTENCES_LIPS_DIR, f"{clip_id}.mp4")
+                
+                if ex_type == "fullface" and os.path.exists(f_vid):
+                    print(f"   -> Creating Full Face example for {clip_id}...")
+                    process_single_video_example(f_vid, sample_data[1], os.path.join(EXAMPLES_DIR, f"example_fullface.mp4"), draw_landmarks=True)
+                
+                elif ex_type == "lips" and os.path.exists(l_vid):
+                    print(f"   -> Creating Lips Only example for {clip_id}...")
+                    process_single_video_example(l_vid, sample_data[1], os.path.join(EXAMPLES_DIR, f"example_lips.mp4"))
+                    
+                elif ex_type == "side_by_side" and os.path.exists(f_vid) and os.path.exists(l_vid):
+                    print(f"   -> Creating Side-by-Side example for {clip_id}...")
+                    process_side_by_side_example(f_vid, l_vid, sample_data[1], os.path.join(EXAMPLES_DIR, f"example_side_by_side.mp4"))
 
     # --- 2. מילים בודדות: Slow Motion ---
     if os.path.exists(SINGLE_WORDS_JSON):

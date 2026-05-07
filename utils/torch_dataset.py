@@ -69,7 +69,7 @@ def print_dataset_stats(labels_path):
     total_samples = len(all_words)
     
     # Count the frequency for each word
-    counter = Counter(all_words)
+    counter = Counter([obj.get('word') for obj in all_words])
     unique_words = list(counter.keys())
     vocab_size = len(unique_words)
     frequencies = list(counter.values())
