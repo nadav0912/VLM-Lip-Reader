@@ -264,7 +264,8 @@ def main():
             tasks.append((video_path, json_path))
 
 
-    optimal_workers = max(1, int(os.cpu_count() * 0.8))
+    optimal_workers = max(1, int(os.cpu_count()) // 3)  # use 12 cores from 32 of my Intel Core i9-14900HX CPU,
+    print(f"Set {optimal_workers} workers for analyze video")
     print(f"Starting Parallel Analysis on {len(tasks)} videos using {optimal_workers} cores")
 
     with ProcessPoolExecutor(max_workers=optimal_workers) as executor:

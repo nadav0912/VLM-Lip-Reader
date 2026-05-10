@@ -206,8 +206,9 @@ def main():
     print(f"Extracting words from {len(videos)} videos to {OUT_DIR}...")
 
     all_results = {}
+    optimal_workers = max(1, (int(os.cpu_count()) // 2)) # use 16 cores from 32 of my Intel Core i9-14900HX CPU,
+    print(f"Set {optimal_workers} workers for create single word dataset")
 
-    optimal_workers = max(1, int(os.cpu_count() * 0.8))
     with ProcessPoolExecutor(max_workers=optimal_workers) as executor:
         futures = {executor.submit(process_video, vid): vid for vid in videos}
         

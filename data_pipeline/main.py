@@ -3,7 +3,7 @@ import sys
 import time
 from datetime import timedelta
 
-# --- הגדרת הקבצים לפי הסדר ---
+# --- Set scripts by the pipeline order---
 SCRIPTS = [
     "data_pipeline/01_downloader.py",
     "data_pipeline/02_transcriber.py",
@@ -24,7 +24,7 @@ def main():
     total_start_time = time.time()
     stats = [] 
 
-    # --- לולאת ההרצה ---
+    # --- Runs scripts loop---
     for script_name in SCRIPTS:
         print(f"\nRunning: {script_name}...")
         step_start = time.time()

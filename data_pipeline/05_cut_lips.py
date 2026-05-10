@@ -185,8 +185,9 @@ def main():
     print(f"Target Size: {TARGET_SIZE}x{TARGET_SIZE}")
     
     # Run in parallel
-    optimal_workers = max(1, int(os.cpu_count() * 0.8))
-    
+    optimal_workers = max(1, int(os.cpu_count()) // 2) # use 16 cores from 32 of my Intel Core i9-14900HX CPU,
+    print(f"Set {optimal_workers} workers for cut lips")
+
     with ProcessPoolExecutor(max_workers=optimal_workers) as executor:
         future_to_video = {executor.submit(process_video_lips, video): video for video in videos}
         

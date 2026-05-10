@@ -7,6 +7,8 @@ import glob
 import threading
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from time import sleep
+from random import uniform
 from tqdm import tqdm
 
 # Add the project root to the path
@@ -76,8 +78,14 @@ def download_single_video(entry):
     # yt-dlp settings
     ydl_opts = {
         # 1. Quality: The best possible, up to the threshold we set
-        # 'format': f'bestvideo[height<={TARGET_HEIGHT}][ext=mp4]+bestaudio[ext=m4a]/best[height<={TARGET_HEIGHT}][ext=mp4]',
-        'format': f'bestvideo[height<={TARGET_HEIGHT}]+bestaudio/best[height<={TARGET_HEIGHT}]',
+        #'format': f'bestvideo[height<={TARGET_HEIGHT}][ext=mp4]+bestaudio[ext=m4a]/best[height<={TARGET_HEIGHT}][ext=mp4]',
+        'format': f'bestvideo[ext=mp4][height<={TARGET_HEIGHT}]+bestaudio[ext=m4a]/bestvideo[height<={TARGET_HEIGHT}]+bestaudio/best[height<={TARGET_HEIGHT}]',
+
+        'extractor_args': {
+            'youtube': ['player_client=ios', 'player_client=android']
+        },
+
+        'js_runtimes': {r'C:\Program Files\nodejs\node.exe': {}},
 
         # 2. Save path
         'outtmpl': os.path.join(DOWNLOAD_DIR, f'{final_filename}.%(ext)s'),
@@ -87,10 +95,13 @@ def download_single_video(entry):
         
         # 4. Cookies (Critical for preventing bans)
         'cookiefile': COOKIES_FILE if os.path.exists(COOKIES_FILE) else None,
-        
+
         # 5. Retries
         'retries': 10,
         'fragment_retries': 10,
+
+        # 6. Merge to mp4 file
+        'merge_output_format': 'mp4',
         
         # 6. Conversion and Processing (FFmpeg)
         'postprocessors': [{
@@ -116,6 +127,9 @@ def download_single_video(entry):
         'quiet': True,
         'no_warnings': True
     }
+
+    # sleep for reduce load
+    sleep(uniform(3, 8))
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -187,7 +201,6 @@ def main():
         print(f"🍪 Cookies found at: {COOKIES_FILE}")
     else:
         print(f"⚠️  Cookies NOT found at: {COOKIES_FILE} (YouTube might block you)")
-
 
 
     # Create target directory

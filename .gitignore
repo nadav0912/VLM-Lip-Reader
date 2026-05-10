@@ -25,7 +25,7 @@ data/04_clips_dataset/labels/*
 data/04_clips_dataset/videos/*
 data/04_clips_dataset/05_lips_videos/*
 data/06_single_words_dataset/*
-data/07_statistics/*
+#data/07_statistics/*
 data/Kaggle_Release_Build/*
 runs/*
 
