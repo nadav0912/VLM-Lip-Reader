@@ -431,7 +431,7 @@ def create_captioned_video(video_path, json_path, output_path):
 
 if __name__ == "__main__":
      visualize_full_analysis(
-        video_name="Unknown_Speaker_Easy_Boring_Business_Ideas_to_Start_in_2026_-_Answering_your_Questions.mp4",
+        video_name="CzIIW_5Upbg.mp4",
         raw_videos_dir="data/01_raw_videos",
         analyses_dir="data/03_frame_analysis",
         transcripts_dir="data/02_raw_transcripts",

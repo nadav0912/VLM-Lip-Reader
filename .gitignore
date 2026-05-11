@@ -25,10 +25,11 @@ data/04_clips_dataset/labels/*
 data/04_clips_dataset/videos/*
 data/04_clips_dataset/05_lips_videos/*
 data/06_single_words_dataset/*
-#data/07_statistics/*
+data/07_statistics/*
 data/Kaggle_Release_Build/*
 runs/*
 
+experiments/examples/*
 
 # Keep the folder structure, but ignore content
 !data/01_raw_videos/.gitkeep
@@ -47,7 +48,7 @@ runs/*
 
 # --- Media Files (Safety Net) ---
 # רשת ביטחון למקרה ששמרת סרטון בתיקייה לא נכונה
-*.mp4
+#*.mp4
 *.avi
 *.mov
 *.mkv
