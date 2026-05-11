@@ -95,7 +95,7 @@ This is a demonstration of the frame validation process (executed in Step 03). T
 
 ### 🎞️ Processed Data Samples
 * **Automated Lip-Sync & Crop (Side-by-Side):** Demonstrates the synchronized tracking of facial landmarks compared to the stabilized, isolated lip-region output.
-<video src="../assets/media/example_side_by_side.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="../assets/media/example_side_by_side.gif" autoplay loop muted playsinline width="100%"></video>
 
 * **Isolated Word Extraction:** A micro-clip of a single word ("Example 1") precisely sliced from a sentence based on WhisperX alignment.
-<video src="../assets/media/example_word_1.mp4" autoplay loop muted playsinline width="100%"></video>
+<video src="../assets/media/example_word_1.gif" autoplay loop muted playsinline width="100%"></video>
