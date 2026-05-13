@@ -1,10 +1,18 @@
 import os
-import sys
 import cv2
 import torch
 import json
 import numpy as np
 from torch.utils.data import Dataset
+
+"""
+    Video-to-Tensor data loader for the Lip2Text pipeline.
+    
+    This class loads isolated word clips, applies color formatting (Grayscale/RGB), 
+    normalizes pixel values, and transforms them into standard PyTorch 4D tensors 
+    (Channels, Time, Height, Width). It maps video files to integer label IDs 
+    using the provided Vocabulary instance.
+"""
 
 class SingleWordDataset(Dataset):
     def __init__(self, video_dir, labels_path, vocab, grayscale=True, transform=None):
@@ -61,8 +69,8 @@ class SingleWordDataset(Dataset):
 
         # Protection: if the video is empty, return one black frame
         if frames is None or len(frames) == 0:
-            return None
-
+            raise ValueError(f"Corrupted or empty video found: {video_path}")
+        
         # Convert to Tensor: (Time, Height, Width, Channels)
         video_tensor = torch.FloatTensor(frames) / 255.0
 
@@ -70,6 +78,9 @@ class SingleWordDataset(Dataset):
         # Currently we have: (Time, Height, Width, Channels)
         # We need to permute to order the dimensions
         video_tensor = video_tensor.permute(3, 0, 1, 2)
+
+        if self.transform:
+            video_tensor = self.transform(video_tensor)
 
         # Return the video with its original length! The Collate will already arrange the padding
         return video_tensor, torch.tensor(label_id, dtype=torch.long)

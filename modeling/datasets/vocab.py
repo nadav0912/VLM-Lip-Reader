@@ -1,5 +1,16 @@
 import json
 
+
+"""
+    A deterministic word-level vocabulary builder and tokenizer for the Lip2Text pipeline.
+    
+    This class establishes a bi-directional mapping between string labels and integer IDs 
+    required for PyTorch tensor operations and embedding layers. It automatically handles:
+    - Sequence padding (<PAD> at index 0) for batching variable-length temporal sequences.
+    - Out-of-vocabulary fallback (<UNK> at index 1) for robust validation and inference.
+"""
+
+
 class Vocabulary:
     def __init__(self, word_list):
         """
