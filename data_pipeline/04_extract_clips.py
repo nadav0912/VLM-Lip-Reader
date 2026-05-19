@@ -19,9 +19,6 @@ from utils.visual_data import create_segments_debug_video
 
 load_dotenv()
 
-
-
-
 # Paths
 INPUT_VIDEO_DIR = os.getenv("DOWNLOAD_VIDEOS_DIR")
 INPUT_TRANSCRIPT_DIR = os.getenv("ROW_TRANSCRIPTS_DIR")
@@ -405,7 +402,7 @@ def main():
     # Create task list
     tasks = [(i+1, v) for i, v in enumerate(videos)]
     
-    optimal_workers = max(1, int(os.cpu_count()) // 3) # use 12 cores from 32 of my Intel Core i9-14900HX CPU,
+    optimal_workers = 4  # use 4 cores from 32 of my Intel Core i9-14900HX CPU
     print(f"Set {optimal_workers} workers for extract clips")
     results = []
 

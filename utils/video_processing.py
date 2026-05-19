@@ -11,6 +11,7 @@ if parent_dir not in sys.path:
 
 from utils.config import FACE_ANCHORS, LIPS_INDICES
 
+
 def calc_movement_metrics(curr_lm, prev_lm, curr_yaw, prev_yaw, curr_ratio, prev_ratio):
     """
     Calculates the change between the current and previous landmarks.
